@@ -11,6 +11,7 @@
 * [实施计划](docs/implementation_plan.md)、[训练与 KL 流程](docs/msa_training_flow.md)、
   [验证方法及限制](docs/validation.md)、[必要修复记录](docs/correctness_fixes.md)、
   [NPU 首轮失败与复测步骤](docs/npu_validation_20260928.md)、
+  [给 NPU 执行代理的完整任务](docs/npu_glm_execution.md)、
   [vLLM-Ascend k2q 参考与适配](docs/vllm_ascend_k2q.md)。
 
 2026-09-28：修复后的 conda `veomni` CPU Triton interpreter 完整测试
