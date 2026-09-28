@@ -1,5 +1,9 @@
 # 验证层次、精度和设备限制
 
+> 最新状态：用户已提供首轮 NPU 结果 **90 passed / 48 failed**，NPU
+> 验收失败；当前分支包含待复测的兼容性候选。下文历史 CPU 通过记录不
+> 覆盖这些设备故障，详见 [NPU 报告与复测步骤](npu_validation_20260928.md)。
+
 ## 数值门禁
 
 输入先生成并量化为 BF16，两条路径共享同一份量化输入。oracle 转为 CPU
@@ -173,3 +177,29 @@ python -m msa_triton.tests.probe_offline_compile
 该步骤没有执行 GPU kernel，也没有编译 NPU 目标。编译修正后的 11 项
 独立梯度、dtype/GQA 和私有 atomic 用例另行复跑：**11 passed，21 deselected，
 18.92 秒**。NPU 的完整数值、长序列内存和性能验证仍须迁移后执行。
+
+## 首轮 NPU 报告后的候选验证
+
+用户报告的设备结果为 **90 passed / 48 failed**，包括一个确定性的 KV
+backward 编译崩溃，以及 score 首发非法访问后的级联失败。报告摘要、
+候选改动与实机复测命令见 [npu_validation_20260928.md](npu_validation_20260928.md)。
+此轮仍没有本机 NPU；下列结果仅验证 CPU 语义和上游编译接口。
+
+完整 CPU interpreter 命令保持不变，结果为 **145 passed，0 failed，
+0 skipped，219.27 秒**，退出码 0。795 条上游 NumPy 标量转换弃用 warning
+未屏蔽。原 138 项全部保留，新增 4 项 attention 补偿归约树高低分量精确
+比较及 3 项连续空序列边界测试。精度阈值未修改。
+
+扩展的离线编译检查 **41 个 CUDA sm80 变体通过**，增加报告中的 D=7 /
+NSEQ=5 score 特化，以及 D=128 / G=2 / Hq=4 / block=4 / NSEQ=2 attention
+特化。它们没有执行 GPU 算术，也不验证 Ascend 编译与调度。
+
+两个诊断工具的本机 smoke：同进程七种 shape 的 BF16 前后向和 FP32
+forward-only 各 7/7 通过；隔离 runner 能逐项启动新进程，拒绝把 skip、
+xfail、xpass、超时或崩溃计为通过。Python compileall 与文档本地链接检查
+也通过。诊断工具不增加 pytest 收集数量。
+最终版本的隔离 runner 又分别执行了报告中的首个 score 与 D=128 attention
+节点，CPU interpreter 下 2/2 通过，确认复测命令能选择并运行这些节点。
+
+**候选尚未得到 NPU 复测结果，NPU 验收状态保持失败。** 本机耗时变化也
+不用于推断 NPU 加速比。

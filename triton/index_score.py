@@ -83,10 +83,16 @@ def _directed_dot(left, right, ROW_TILE: tl.constexpr, DIM_TILE: tl.constexpr,
 @triton.jit
 def _sequence_bounds(CU, token, N_SEQS: tl.constexpr, SEQ_TILE: tl.constexpr):
     seq = tl.arange(0, SEQ_TILE).to(tl.int64)
-    starts = tl.load(CU + seq, seq < N_SEQS, other=2147483647).to(tl.int64)
-    seq_id = (tl.sum(((seq < N_SEQS) & (token >= starts)).to(tl.int32), axis=0) - 1).to(tl.int64)
-    begin = tl.load(CU + seq_id).to(tl.int64)
-    end = tl.load(CU + seq_id + 1).to(tl.int64)
+    # Keep every formed pointer inside CU, even for padded lanes. Reduce the
+    # boundary values themselves rather than reloading CU through a scalar
+    # index produced by a vector reduction. This is an Ascend lowering
+    # simplification; the original masked-load semantics were valid Triton.
+    safe_seq = tl.minimum(seq, N_SEQS - 1)
+    starts = tl.load(CU + safe_seq, seq < N_SEQS, other=0).to(tl.int64)
+    ends = tl.load(CU + safe_seq + 1, seq < N_SEQS, other=0).to(tl.int64)
+    selected = (seq < N_SEQS) & (token >= starts)
+    begin = tl.max(tl.where(selected, starts, 0), axis=0)
+    end = tl.max(tl.where(selected, ends, 0), axis=0)
     return begin, end
 
 
@@ -113,10 +119,12 @@ def _index_score_forward(
     else:
         key_offset = tl.arange(0, KEY_TILE).to(tl.int64)
         dim = tl.arange(0, DIM_TILE).to(tl.int64)
+        safe_dim = tl.minimum(dim, D - 1)
         keys = begin + block * BLOCK + key_offset
         valid = (key_offset < BLOCK) & (keys < end) & (keys <= token)
-        q = tl.load(Q + tnd_offset(token, group, G, D) + dim, dim < D, other=0)
-        k = tl.load(K + tnd_offset(keys[:, None], 0, 1, D) + dim[None, :],
+        safe_keys = tl.minimum(keys, tl.minimum(end - 1, token))
+        q = tl.load(Q + tnd_offset(token, group, G, D) + safe_dim, dim < D, other=0)
+        k = tl.load(K + tnd_offset(safe_keys[:, None], 0, 1, D) + safe_dim[None, :],
                     valid[:, None] & (dim[None, :] < D), other=0)
         high, low = _directed_dot(k, q[None, :], KEY_TILE, DIM_TILE, SCALE, LOG_DIM)
         maximum_hi = tl.max(tl.where(valid, high, -float("inf")), axis=0)
@@ -149,7 +157,8 @@ def _index_score_backward_q(
     begin, end = _sequence_bounds(CU, token, N_SEQS, SEQ_TILE)
     key_offset = tl.arange(0, KEY_TILE).to(tl.int64)
     dim = tl.arange(0, DIM_TILE).to(tl.int64)
-    q = tl.load(Q + tnd_offset(token, group, G, D) + dim, dim < D, other=0)
+    safe_dim = tl.minimum(dim, D - 1)
+    q = tl.load(Q + tnd_offset(token, group, G, D) + safe_dim, dim < D, other=0)
     grad = tl.full((DIM_TILE,), 0, tl.float32)
     correction = tl.full((DIM_TILE,), 0, tl.float32)
     for block in range(tl.cdiv(token - begin + 1, BLOCK)):
@@ -158,12 +167,13 @@ def _index_score_backward_q(
         ds = tl.load(DS + offset)
         if info > 0:
             key = begin + tl.cast(block, tl.int64) * BLOCK + info.to(tl.int64) - 1
-            winner_k = tl.load(K + tnd_offset(key, 0, 1, D) + dim, dim < D, other=0)
+            winner_k = tl.load(K + tnd_offset(key, 0, 1, D) + safe_dim, dim < D, other=0)
             addition = winner_k * (ds * SCALE)
         else:
             keys = begin + tl.cast(block, tl.int64) * BLOCK + key_offset
             valid = (key_offset < BLOCK) & (keys < end) & (keys <= token)
-            k = tl.load(K + tnd_offset(keys[:, None], 0, 1, D) + dim[None, :],
+            safe_keys = tl.minimum(keys, tl.minimum(end - 1, token))
+            k = tl.load(K + tnd_offset(safe_keys[:, None], 0, 1, D) + safe_dim[None, :],
                         valid[:, None] & (dim[None, :] < D), other=0)
             high, low = _directed_dot(k, q[None, :], KEY_TILE, DIM_TILE, SCALE, LOG_DIM)
             maximum_hi = tl.load(MAX_HI + offset)
@@ -175,7 +185,7 @@ def _index_score_backward_q(
         updated = grad + adjusted
         correction = (updated - grad) - adjusted
         grad = updated
-    tl.store(DQ + tnd_offset(token, group, G, D) + dim, grad, dim < D)
+    tl.store(DQ + tnd_offset(token, group, G, D) + safe_dim, grad, dim < D)
 
 
 @triton.jit
@@ -192,16 +202,18 @@ def _index_score_backward_k_group(
     block = (token - begin) // BLOCK
     query_offset = tl.arange(0, QUERY_TILE).to(tl.int64)
     dim = tl.arange(0, DIM_TILE).to(tl.int64)
-    k = tl.load(K + tnd_offset(token, 0, 1, D) + dim, dim < D, other=0)
+    safe_dim = tl.minimum(dim, D - 1)
+    k = tl.load(K + tnd_offset(token, 0, 1, D) + safe_dim, dim < D, other=0)
     grad = tl.full((DIM_TILE,), 0, tl.float32)
     correction = tl.full((DIM_TILE,), 0, tl.float32)
     for start in range(token, end, QUERY_TILE):
         queries = tl.cast(start, tl.int64) + query_offset
         valid = queries < end
-        q = tl.load(Q + tnd_offset(queries[:, None], group, G, D) + dim[None, :],
+        safe_queries = tl.minimum(queries, end - 1)
+        q = tl.load(Q + tnd_offset(safe_queries[:, None], group, G, D) + safe_dim[None, :],
                     valid[:, None] & (dim[None, :] < D), other=0)
         high, low = _directed_dot(q, k[None, :], QUERY_TILE, DIM_TILE, SCALE, LOG_DIM)
-        offset = tnd_offset(queries, group, G, NB) + block
+        offset = tnd_offset(safe_queries, group, G, NB) + block
         maximum_hi = tl.load(MAX_HI + offset, valid, other=float("inf"))
         maximum_lo = tl.load(MAX_LO + offset, valid, other=0)
         info = tl.load(TIE_INFO + offset, valid, other=0)
@@ -216,7 +228,7 @@ def _index_score_backward_k_group(
         updated = grad + adjusted
         correction = (updated - grad) - adjusted
         grad = updated
-    tl.store(DK_GROUP + tnd_offset(token, group, G, D) + dim, grad, dim < D)
+    tl.store(DK_GROUP + tnd_offset(token, group, G, D) + safe_dim, grad, dim < D)
 
 
 @triton.jit
@@ -227,9 +239,11 @@ def _index_score_reduce_k(
     token = tl.program_id(0).to(tl.int64)
     group = tl.arange(0, GROUP_TILE).to(tl.int64)
     dim = tl.arange(0, DIM_TILE).to(tl.int64)
-    values = tl.load(DK_GROUP + tnd_offset(token, group[:, None], G, D) + dim[None, :],
+    safe_group = tl.minimum(group, G - 1)
+    safe_dim = tl.minimum(dim, D - 1)
+    values = tl.load(DK_GROUP + tnd_offset(token, safe_group[:, None], G, D) + safe_dim[None, :],
                      (group[:, None] < G) & (dim[None, :] < D), other=0)
-    tl.store(DK + tnd_offset(token, 0, 1, D) + dim, tl.sum(values, axis=0), dim < D)
+    tl.store(DK + tnd_offset(token, 0, 1, D) + safe_dim, tl.sum(values, axis=0), dim < D)
 
 
 class _IndexScore(torch.autograd.Function):

@@ -57,6 +57,10 @@ backward 构建，额外空间为 O(T*G*K + T*Hq + T*G*D)。
 Q/K/V 梯度按需计算：Q-only 跳过 CSR，KV-only 仍保留依赖的 query 统计，
 V-only 保留概率质量精化。Triton 地址在乘加前提升为 int64，int32 metadata
 的容量检查独立保留。数值修复的细节与内存代价见 `correctness_fixes.md`。
+NPU 首轮验收失败后的候选：score 直接归约序列起止边界，消除间接 CU
+读取，并在指针构造前钳制 masked lane；attention 的相邻行补偿树用静态
+reshape/permute/split 实现，数学次序不变。实机状态及复测命令见
+`npu_validation_20260928.md`；尚不能将这些候选视为 NPU 修复已验证。
 首版采用可移植、易验证的 kernel，不承诺在 A3 上已经获得速度提升。
 
 参考 vLLM-Ascend 的反向邻接思想，具体来源和差异见 `vllm_ascend_k2q.md`。

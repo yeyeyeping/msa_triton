@@ -212,11 +212,15 @@ def _merge_pairs_impl(a_hi, a_lo, b_hi, b_lo):
 
 def _reduce_pairs_impl(high, low, HALF: tl.constexpr, BLOCK_D: tl.constexpr):
     """Reduce adjacent query rows, keeping both FP32 parts of each sum."""
-    rows = 2 * tl.arange(0, HALF)[:, None] + tl.zeros((HALF, BLOCK_D), tl.int32)
-    left_hi = tl.gather(high, rows, 0)
-    right_hi = tl.gather(high, rows + 1, 0)
-    left_lo = tl.gather(low, rows, 0)
-    right_lo = tl.gather(low, rows + 1, 0)
+    # Preserve the exact (row 0 + row 1), (row 2 + row 3), ... tree without
+    # materializing gather indices at every level. This gives the compiler
+    # fixed tensor structure for the D=128 backward specialization that
+    # aborts in the reported Ascend compiler. Target validation is still
+    # required to confirm this avoids that failure; arithmetic is unchanged.
+    high_pairs = tl.permute(tl.reshape(high, (HALF, 2, BLOCK_D)), (0, 2, 1))
+    low_pairs = tl.permute(tl.reshape(low, (HALF, 2, BLOCK_D)), (0, 2, 1))
+    left_hi, right_hi = tl.split(high_pairs)
+    left_lo, right_lo = tl.split(low_pairs)
     return _merge_pairs(left_hi, left_lo, right_hi, right_lo)
 
 

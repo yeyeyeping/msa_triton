@@ -1,7 +1,8 @@
 # MiniMax M3 TND sparse attention
 
 独立实现 MiniMax M3 的三阶段接口，目标设备为 Ascend 910C/A3。当前版本是
-可移植的正确性实现；CPU 解释器结果不代表已完成 NPU 编译、调优或性能验收。
+独立算子实现，正在进行 NPU 适配。**当前未通过 NPU 验收**；CPU 解释器
+结果不代表 NPU 编译、调优或性能验收。
 
 * `eager/`：迁移 Transformers BSND 数学，以可微 unpack/pack 提供 TND 接口。
 * `triton/`：score、attention 的 TND Triton 前反向；top-k 使用设备原生 `torch.topk`。
@@ -9,11 +10,19 @@
 * `tests/reference_fp64.py`：独立 CPU FP64 前反向基准。
 * [实施计划](docs/implementation_plan.md)、[训练与 KL 流程](docs/msa_training_flow.md)、
   [验证方法及限制](docs/validation.md)、[必要修复记录](docs/correctness_fixes.md)、
+  [NPU 首轮失败与复测步骤](docs/npu_validation_20260928.md)、
   [vLLM-Ascend k2q 参考与适配](docs/vllm_ascend_k2q.md)。
 
 2026-09-28：修复后的 conda `veomni` CPU Triton interpreter 完整测试
 **138 项通过，无失败或跳过**；另有 31 个 CUDA sm80 离线编译变体通过。
 这些结果不代表 NPU 验收；详细精度对照、原生 eager 差异及设备限制见验证报告。
+
+用户提供的首轮 NPU 结果为 **90 passed / 48 failed**，包含 attention KV
+backward 编译崩溃和 score 非确定性非法地址访问后的级联失败。
+`fix/npu-portability` 提供兼容性改动及隔离复现工具，等待实机复测；
+不能将候选或本机通过记录视为 NPU 缺陷已经修复。
+候选的本机回归为 **145 passed，0 failed，0 skipped**，41 个 CUDA sm80
+离线编译变体通过，精度阈值仍为 `atol=rtol=1e-4`。
 
 ## 使用
 
@@ -64,12 +73,14 @@ CPU 解释器执行实际 Triton kernel，BF16 输入在调用前精确扩展为
 
 ```bash
 unset TRITON_INTERPRET
-MSA_TEST_DEVICE=npu python -m pytest msa_triton/tests -q -s
+MSA_TEST_DEVICE=npu python -m pytest msa_triton/tests -q -s -x
 python -m msa_triton.benchmark --device npu --lengths 8192 16384 32768 --backward
 ```
 
 Benchmark 分别记录 score、top-k、k2q CSR 构建、attention 和组合前向耗时；
 `--backward` 额外记录 score/attention 的前向加反向耗时，后者包含 CSR 构建。
+当前应先按 [复测步骤](docs/npu_validation_20260928.md) 排查失败并通过数值
+验收，再进行长序列性能测试。
 
 BF16 native eager 会在 QK 和 softmax 概率处舍入，与一次 FP64 计算最后才舍入
 并不等价。因此测试分别验证 native BSND 适配一致性、Triton 对 FP64 的严格

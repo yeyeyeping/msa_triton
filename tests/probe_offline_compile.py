@@ -39,10 +39,15 @@ def main():
         assert "ptx" in result.asm
         compiled.append(fn.__name__)
 
-    for dim, groups, block, scale in [(3, 1, 2, 1.0), (16, 4, 16, -1.0), (128, 4, 128, 0.0)]:
+    for dim, groups, block, scale, num_blocks, num_sequences in [
+        (3, 1, 2, 1.0, 4, 3), (16, 4, 16, -1.0, 4, 3), (128, 4, 128, 0.0, 4, 3),
+        # The first runtime failure in the NPU report: [0,3,0,2,0], D=7.
+        (7, 2, 4, 1.0, 2, 5),
+    ]:
         dimension_tile = triton.next_power_of_2(dim)
         constants = dict(
-            G=groups, D=dim, NB=4, BLOCK=block, SCALE=scale, N_SEQS=3, SEQ_TILE=4,
+            G=groups, D=dim, NB=num_blocks, BLOCK=block, SCALE=scale,
+            N_SEQS=num_sequences, SEQ_TILE=triton.next_power_of_2(num_sequences),
             KEY_TILE=triton.next_power_of_2(block), QUERY_TILE=32,
             DIM_TILE=dimension_tile, LOG_DIM=dimension_tile.bit_length() - 1,
             GROUP_TILE=triton.next_power_of_2(groups),
@@ -71,6 +76,14 @@ def main():
     for dk, dv in [(True, False), (False, True)]:
         check(backward, dict(constants, COMPUTE_DQ=False, COMPUTE_DK=dk,
                              COMPUTE_DV=dv, WRITE_STATS=False, ACCUMULATE_KV=True))
+    # Exact reported attention specialization, not only the larger GQA case.
+    reported = dict(constants, H_Q=4, H_KV=2, TOPK=2, NSEQ=2,
+                    BLOCK_SIZE=4, BLOCK_N=4, BLOCK_META=2)
+    check(forward, reported)
+    check(backward, dict(reported, COMPUTE_DQ=True, COMPUTE_DK=True,
+                         COMPUTE_DV=True, WRITE_STATS=True, ACCUMULATE_KV=False))
+    for dk, dv in [(True, False), (False, True), (True, True)]:
+        check(kv, dict(reported, COMPUTE_DK=dk, COMPUTE_DV=dv))
     print(f"{len(compiled)} CUDA sm80 offline compile variants passed; "
           "no hardware execution or NPU compilation")
 
