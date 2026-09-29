@@ -61,9 +61,9 @@ m3_sparse_attention ◄── 主 Q/K/V，TND
    分数代替；后续 KL 从 index Q/K 重算，教师和 hidden-state 梯度边界按
    训练约定处理。返回 score 不意味着 KL 必须经过 block max/top-k。
 
-完整接口见 [实施计划](implementation_plan.md)，KL 见
-[训练流程](msa_training_flow.md)，迁移源版本及舍入行为见
-[eager 来源记录](../eager/PROVENANCE.md)。
+完整接口见 [实施计划](../knowledge/implementation_plan.md)，KL 见
+[训练流程](../knowledge/msa_training_flow.md)，迁移源版本及舍入行为见
+[eager 来源记录](../../eager/PROVENANCE.md)。
 
 ## 3. 建立两种不同用途的参考实现
 
@@ -144,7 +144,7 @@ KV backward 所需的 query 统计；V-only 保留概率质量修正。不需要
 本项目 forward 和 dQ 由 query 负责；dK/dV 由每个 key token/group 遍历
 CSR 中的关联 queries，独占写出梯度，避免公共路径的浮点 atomic 累加。
 上游参考是推理接口，包含 AscendC/vendor 算子；没有把其无梯度接口直接
-当作训练 backward。布局与适配差异见 [k2q 参考记录](vllm_ascend_k2q.md)。
+当作训练 backward。布局与适配差异见 [k2q 参考记录](../knowledge/vllm_ascend_k2q.md)。
 
 早期 KV 实现每次处理 32 个 queries，对 `[32,D]` 梯度做五层相邻行
 TwoSum 补偿树，再合入跨 tile 高低分量。它在 CPU 的数学回归中通过，
@@ -225,7 +225,7 @@ runtime 为 3.2.0、distribution 为 3.5.0。记录这个差异，但没有仅�
 
 结论是**单独关闭该选项不能绕过故障**，不是“所有内存相关问题已排除”，
 也不是“该选项肯定未生效”。重放脚本见
-[probe_attention_compile_replay.py](../tests/probe_attention_compile_replay.py)。
+[probe_attention_compile_replay.py](../../tests/probe_attention_compile_replay.py)。
 
 ### 8.2 before-pass IR 将范围缩到 PlanMemory
 
@@ -291,8 +291,8 @@ canonicalize-ext → memref-dse → hivm-inline-load-copy
 
 这一步把“编译结构可能更简单”与“训练数值仍然正确”重新放到同一标准上。
 没有将通过的单例升级为生产实现，也没有用较宽容差接受残差丢失。反例已
-加入 [正式 attention 测试](../tests/test_triton_attention.py)，历史消融可由
-[ablation 工具](../tests/probe_attention_ablation.py) 的 `--case cancellation`
+加入 [正式 attention 测试](../../tests/test_triton_attention.py)，历史消融可由
+[ablation 工具](../../tests/probe_attention_ablation.py) 的 `--case cancellation`
 复现；这些预期失败不计入生产测试的通过数。
 
 ## 11. 最终采用的修复：保留补偿数学，改变计算结构
@@ -328,7 +328,7 @@ canonicalize-ext → memref-dse → hivm-inline-load-copy
 宣称双分量累加器在任意输入范围都无损。
 
 旧树及三个关键函数固定在
-[_attention_tree_reference.py](../tests/_attention_tree_reference.py)，核对与
+[_attention_tree_reference.py](../../tests/_attention_tree_reference.py)，核对与
 `6d47514` 的函数 AST 一致，仅供显式诊断。生产路径移除了树 helper；
 旧失败证据得到保留，没有混入新候选的正式验收。
 
@@ -396,8 +396,8 @@ SHA、统计、首个失败 node、阶段和错误首行，完整日志保留远
 
 首轮原始报告摘要见 [npu_validation_20260928.md](npu_validation_20260928.md)，
 候选失败及环境细节见 [npu_retest_20260929.md](npu_retest_20260929.md)。
-诊断入口另包括 [隔离 runner](../tests/probe_npu_isolated.py)、
-[score 顺序复现](../tests/probe_score_sequence.py)、
-[attention 结构对照](../tests/probe_attention_scope.py) 和
-[离线 CUDA 编译](../tests/probe_offline_compile.py)。历史协议保留用于解释
+诊断入口另包括 [隔离 runner](../../tests/probe_npu_isolated.py)、
+[score 顺序复现](../../tests/probe_score_sequence.py)、
+[attention 结构对照](../../tests/probe_attention_scope.py) 和
+[离线 CUDA 编译](../../tests/probe_offline_compile.py)。历史协议保留用于解释
 历史结果；执行新测试应以对应候选的专门复测文档为准。

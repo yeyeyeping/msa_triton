@@ -8,15 +8,8 @@
 * `triton/`：score、attention 的 TND Triton 前反向；top-k 使用设备原生 `torch.topk`。
   attention backward 使用 k2q CSR 组织 dK/dV，不通过公共路径的浮点 atomic 累加。
 * `tests/reference_fp64.py`：独立 CPU FP64 前反向基准。
-* [实施计划](docs/implementation_plan.md)、[训练与 KL 流程](docs/msa_training_flow.md)、
-  [完整实现与调试复盘](docs/debugging_retrospective.md)、
-  [验证方法及限制](docs/validation.md)、[必要修复记录](docs/correctness_fixes.md)、
-  [NPU 首轮失败与复测步骤](docs/npu_validation_20260928.md)、
-  [NPU 候选复测失败与取证](docs/npu_retest_20260929.md)、
-  [attention NPU 复测协议与结果（48 项）](docs/npu_attention_streaming_retest.md)、
-  [attention 离线编译短结果诊断](docs/npu_attention_compile_probe.md)、
-  [给 NPU 执行代理的完整任务](docs/npu_glm_execution.md)、
-  [vLLM-Ascend k2q 参考与适配](docs/vllm_ascend_k2q.md)。
+* [文档索引](docs/README.md)：[知识与设计说明](docs/knowledge/)、
+  [调试、审查与报告](docs/debugging/)。
 
 2026-09-28：修复后的 conda `veomni` CPU Triton interpreter 完整测试
 **138 项通过，无失败或跳过**；另有 31 个 CUDA sm80 离线编译变体通过。
@@ -34,7 +27,7 @@ score blocking 10/10、non-blocking 10/10 次设备异常。B/C/D 未执行。
 Kahan 在新增消减反例中丢失梯度残差，未采用。新 attention 候选改为逐
 CSR query 的向量 TwoSum 累加，保留概率精化、接口和精度门禁。用户于
 2026-09-29 明确确认 `df31a1d` 的 **48 项 attention NPU 测试全部通过**。
-详细过程见[完整调试复盘](docs/debugging_retrospective.md)。score 非法地址
+详细过程见[完整调试复盘](docs/debugging/debugging_retrospective.md)。score 非法地址
 故障仍未解决，串行 query 的性能代价亦待实测。
 新候选的本机 CPU interpreter 回归为 **157 passed，0 failed，0 skipped**，
 41 个 CUDA sm80 离线编译变体通过；均不包含 NPU 编译或执行。
@@ -94,7 +87,7 @@ python -m msa_triton.benchmark --device npu --lengths 8192 16384 32768 --backwar
 
 Benchmark 分别记录 score、top-k、k2q CSR 构建、attention 和组合前向耗时；
 `--backward` 额外记录 score/attention 的前向加反向耗时，后者包含 CSR 构建。
-attention 的 [48 项复测](docs/npu_attention_streaming_retest.md)已由用户确认
+attention 的 [48 项复测](docs/debugging/npu_attention_streaming_retest.md)已由用户确认
 通过；仍须解决 score、完成全量数值验收，再进行长序列性能测试。
 
 BF16 native eager 会在 QK 和 softmax 概率处舍入，与一次 FP64 计算最后才舍入

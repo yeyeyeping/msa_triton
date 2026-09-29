@@ -56,21 +56,21 @@ dQ 使用 query-owned 计算，dK/dV 经 k2q CSR 由 key/group 独占归约，
 backward 构建，额外空间为 O(T*G*K + T*Hq + T*G*D)。
 Q/K/V 梯度按需计算：Q-only 跳过 CSR，KV-only 仍保留依赖的 query 统计，
 V-only 保留概率质量精化。Triton 地址在乘加前提升为 int64，int32 metadata
-的容量检查独立保留。数值修复的细节与内存代价见 `correctness_fixes.md`。
+的容量检查独立保留。数值修复的细节与内存代价见 [correctness_fixes.md](../debugging/correctness_fixes.md)。
 NPU 首轮验收失败后的候选：score 直接归约序列起止边界，消除间接 CU
 读取，并在指针构造前钳制 masked lane；attention 的相邻行补偿树用静态
 reshape/permute/split 实现，数学次序不变。实机状态及复测命令见
-`npu_validation_20260928.md`。2026-09-29 回传确认两项候选均未解决设备
-故障，后续证据见 `npu_retest_20260929.md`。六项结构对照后，attention
+[npu_validation_20260928.md](../debugging/npu_validation_20260928.md)。2026-09-29 回传确认两项候选均未解决设备
+故障，后续证据见 [npu_retest_20260929.md](../debugging/npu_retest_20260929.md)。六项结构对照后，attention
 改为逐 CSR query 的 `[D]` TwoSum 累加候选，避免生产路径的 32 行补偿树；
 该 KV kernel 禁用浮点融合，保留概率精化与原接口。此实现降低 query
 并行度。用户于 2026-09-29 确认 `df31a1d` 的 48 项 attention NPU 测试
 全部通过，性能尚未验证，score 仍未解决。普通 tile sum + Kahan 已有丢失
-`2^-12` 梯度残差的反例，不能采用。过程见 `debugging_retrospective.md`，
-复测协议与结果见 `npu_attention_streaming_retest.md`。
+`2^-12` 梯度残差的反例，不能采用。过程见 [debugging_retrospective.md](../debugging/debugging_retrospective.md)，
+复测协议与结果见 [npu_attention_streaming_retest.md](../debugging/npu_attention_streaming_retest.md)。
 首版采用可移植、易验证的 kernel，不承诺在 A3 上已经获得速度提升。
 
-参考 vLLM-Ascend 的反向邻接思想，具体来源和差异见 `vllm_ascend_k2q.md`。
+参考 vLLM-Ascend 的反向邻接思想，具体来源和差异见 [vllm_ascend_k2q.md](vllm_ascend_k2q.md)。
 上游使用推理专用 AscendC/vendor 算子；本项目实现独立的训练 backward，
 不直接调用其无梯度推理接口。保留私有 atomic reference 只用于算法回归。
 

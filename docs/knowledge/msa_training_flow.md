@@ -2,7 +2,7 @@
 
 本文约定 `msa_triton` 的算子职责，以及训练和不训练 Indexer 时的计算、梯度差异。当前阶段只进行独立算子实现、测试和验证，暂不接入 VeOmni。
 
-优化目标为 Ascend 910C/A3，首版关注 BF16、8K–32K packed self-attention，允许混用 Triton 与 NPU 原生算子。本文描述接口与训练语义；已实现范围及实际执行的验证见 `implementation_plan.md`、`validation.md`。独立 KL kernel 和 VeOmni 接入仍属后续工作。
+优化目标为 Ascend 910C/A3，首版关注 BF16、8K–32K packed self-attention，允许混用 Triton 与 NPU 原生算子。本文描述接口与训练语义；已实现范围及实际执行的验证见 [implementation_plan.md](implementation_plan.md)、[validation.md](../debugging/validation.md)。独立 KL kernel 和 VeOmni 接入仍属后续工作。
 
 ## 1. 基本约定
 
@@ -13,7 +13,7 @@
 - 有效 block indices 无重复、左对齐，不足部分填 `-1`；下游不依赖有效项的排列顺序。
 - 首版主 attention 的 dropout 为 0；KV cache decode、Context Parallel 和分布式接入不属于当前独立验证范围。
 
-这里的 group 独立选择遵循 [MSA 技术报告 §3.1](https://arxiv.org/html/2606.13392v1#S3.SS1)。锁定的 Transformers 上游源码也已经保留 group 维度；本地 VeOmni 中较旧的 HF 派生实现仍有跨 index heads 取 max 的行为。本项目从上游迁移 eager，来源见 `../eager/PROVENANCE.md`，不以旧派生实现作为等价基准。
+这里的 group 独立选择遵循 [MSA 技术报告 §3.1](https://arxiv.org/html/2606.13392v1#S3.SS1)。锁定的 Transformers 上游源码也已经保留 group 维度；本地 VeOmni 中较旧的 HF 派生实现仍有跨 index heads 取 max 的行为。本项目从上游迁移 eager，来源见 [eager 来源记录](../../eager/PROVENANCE.md)，不以旧派生实现作为等价基准。
 
 ## 2. MSA 的三个阶段
 
@@ -56,7 +56,7 @@ Triton 在公开 FP32 分数舍入前，以补偿点积的高位与残差判定�
 候选分数舍入相等不等于 block 内的数学最大值并列；top-k 仍按公开分数选块。
 只有需要 score backward 时才保存最大值高位、残差和胜者信息，`no_grad`
 不分配这些状态。原生 eager 保留上游打分数学，在极近分数或消减处可能与
-Triton 存在梯度差异，详见 [必要修复](correctness_fixes.md)。这不改变 KL
+Triton 存在梯度差异，详见 [必要修复](../debugging/correctness_fixes.md)。这不改变 KL
 需要从 index Q/K 重算 token logits 的边界。
 
 ### 2.2 选块：`m3_topk`
@@ -201,7 +201,7 @@ if train_indexer:
 
 ## 7. 验证要求
 
-详见 `implementation_plan.md` 和 `validation.md`。使用同一份 BF16 输入，转 CPU FP64 完成参考前反向，结果再转换为公开 dtype，以 `atol=rtol=1e-4` 比较。FP64 oracle 独立实现，不复用原生 eager 的 FP32/BF16 中间舍入。原生 BF16 eager 与 oracle 的精度差异另行报告，不能通过放宽 Triton 的 FP64 门禁来掩盖。
+详见 [implementation_plan.md](implementation_plan.md) 和 [validation.md](../debugging/validation.md)。使用同一份 BF16 输入，转 CPU FP64 完成参考前反向，结果再转换为公开 dtype，以 `atol=rtol=1e-4` 比较。FP64 oracle 独立实现，不复用原生 eager 的 FP32/BF16 中间舍入。原生 BF16 eager 与 oracle 的精度差异另行报告，不能通过放宽 Triton 的 FP64 门禁来掩盖。
 
 1. 对齐各 group 的 block scores；构造不同 groups 选择不同 blocks 的样例，防止误做跨 group 归约。
 2. 验证 top-k 的 local 保留、名额占用、去重、`-1` 填充和输入 scores 不被修改。并列分数按合法选择集合验收。

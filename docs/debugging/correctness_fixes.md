@@ -9,7 +9,7 @@
 仍满足前向阈值，但 dIndexQ/dIndexK 的最大绝对误差为 0.5。单独保存原先的
 argmax 或放宽分数误差都不能解决这个梯度问题。
 
-[index_score.py](../triton/index_score.py) 现在用两个 FP32 分量保存点积的
+[index_score.py](../../triton/index_score.py) 现在用两个 FP32 分量保存点积的
 高位和残差：先补偿乘法舍入，再以固定的相邻维度归约树合并。前向与反向
 重算使用相同的维度归约次序，不随 query/key tile 大小改变。涉及补偿的
 kernel 设置 `enable_fp_fusion=False`，避免融合改变依赖逐步舍入的表达式。
@@ -53,13 +53,13 @@ scale 为负时反转排序，为零时所有有效 token 并列。唯一胜者�
 
 ## 2. 地址运算在乘加前提升为 int64
 
-[index_score.py](../triton/index_score.py) 与
-[sparse_attention.py](../triton/sparse_attention.py) 中的 program id、token、
+[index_score.py](../../triton/index_score.py) 与
+[sparse_attention.py](../../triton/sparse_attention.py) 中的 program id、token、
 head、block、序列边界及 CSR 游标在地址乘加前提升为 int64。尤其包括从
 int32 CSR 加载的 query token，以及 `offset + arange` 和最后一轮游标步进。
 只把 program id 转成 int64，不能覆盖这些独立的溢出来源。
 
-共享的 [_addressing.py](../triton/_addressing.py) 提供 TND 元素偏移和游标
+共享的 [_addressing.py](../../triton/_addressing.py) 提供 TND 元素偏移和游标
 加法；新增微型 kernel 用实际生产 helper 测试超过 `2^31-1` 的偏移，无需
 分配巨大张量。T=262144、Hq=64、D=128 的最后一个有效偏移恰好是
 `2^31-1`；T=262145 才出现超出 int32 的合法元素地址。
@@ -112,7 +112,7 @@ score、dQ、dK 的最大绝对误差均为 0。
 dQ[1,1,96] 产生 0.00048828125 的误差。后者是验证删除精化的风险，不计入
 生产实现的正式测试；生产 kernel 没有应用这两种消融。
 
-另增加 [probe_offline_compile.py](../tests/probe_offline_compile.py)，在本机
+另增加 [probe_offline_compile.py](../../tests/probe_offline_compile.py)，在本机
 上游 Triton 上离线编译 CUDA sm80 的 31 个变体。该检查发现并修复了新增
 梯度条件的连续三个 `or` 语法问题；改成明确括号分组后全部通过。这弥补了
 CPU interpreter 不检查所有 Triton 语言限制的不足，不构成 NPU 验收。

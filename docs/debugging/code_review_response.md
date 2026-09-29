@@ -16,7 +16,7 @@ CPU interpreter 小实验和独立副本上的数值消融。没有执行 A3 编
 
 ## 1. 应先处理的新增数值问题
 
-位置：[index_score.py](../triton/index_score.py) 的 FP32 点积及最大值判定，尤其是
+位置：[index_score.py](../../triton/index_score.py) 的 FP32 点积及最大值判定，尤其是
 forward 的 `logits/maximum/winners`。它与 A3 的“前反向重算使用不同归约布局”
 是两个问题：**即使前反向完全一致，FP32 与 FP64 的胜者集合也可能不同。**
 
@@ -44,7 +44,7 @@ score 通过原门槛，但 dQ/dK 最大绝对误差为 **0.5**。进一步把 k
 `[0,2^-12,0]`：FP64 中两者真正并列，当前 Triton 只选中 k[1]；token 1 的
 score 此时完全一致，梯度仍相差 0.5。
 
-复现脚本已保存为 [probe_score_rounding.py](../tests/probe_score_rounding.py)：
+复现脚本已保存为 [probe_score_rounding.py](../../tests/probe_score_rounding.py)：
 
 ```bash
 source /home/yeep/env/miniconda/etc/profile.d/conda.sh
@@ -81,7 +81,7 @@ NPU 上的地址提升代价、编译和实际边界仍须验证。
 
 ### A2：属于性能浪费，但不能独立跳过 query kernel
 
-[sparse_attention.py](../triton/sparse_attention.py) 的 query backward 不仅计算
+[sparse_attention.py](../../triton/sparse_attention.py) 的 query backward 不仅计算
 dQ，还生成 `center/centered_delta/probability_mass`。KV backward 使用这些统计量，
 所以 `Q.requires_grad=False` 并不意味着可以跳过整个 query kernel。
 
@@ -254,7 +254,7 @@ oracle 未舍入值：0.07397456824450169
 量化跳变放大”的风险。257-token 专门回归单独通过，所以只跑该回归也不足以证明
 中心精化可删除。
 
-两种消融保存在 [probe_attention_ablation.py](../tests/probe_attention_ablation.py)，
+两种消融保存在 [probe_attention_ablation.py](../../tests/probe_attention_ablation.py)，
 运行时创建临时源码副本，不修改生产文件。示例：
 
 ```bash
