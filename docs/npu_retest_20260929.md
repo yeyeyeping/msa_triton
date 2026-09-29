@@ -10,6 +10,10 @@
 [只回传短结果的 attention 离线编译对照](npu_attention_compile_probe.md)。
 下方完整取证清单保留为参考，不要求此时全部回传。
 
+后续离线对照回传：原参数和仅关闭 auto multi-buffer 均为 returncode=-6，
+同一 `PlanMemory Traverse IR Failed`。该选项不能单独绕过错误，下一步
+采集崩溃前 pass 的局部 IR，生产内核尚未产生新的修复候选。
+
 本次测试针对 `fix/npu-portability` 的
 `8649b7377a00e2a512cd1b333b2385c7e274a2ed`，内核改动提交为 `ebf85cd`。
 四个核心文件 SHA256 全部匹配；报告称已跟踪源码未改动，只有测试结果

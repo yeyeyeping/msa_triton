@@ -2,6 +2,8 @@
 
 Only the known bishengir command is accepted. A baseline SIGABRT with the
 reported PlanMemory fatal gates a second compile with auto-multi-buffer=False.
+With --dump-pass-ir, run only the original baseline plus IR-before-pass printing
+and retain the last printed pass input locally. No compiler option is disabled.
 This diagnostic imports no torch/Triton and is not an NPU acceptance test.
 The caller must establish the IR's D=128 specialization from the saved logs;
 a matching function symbol and file hash alone cannot establish its provenance.
@@ -10,6 +12,7 @@ a matching function symbol and file hash alone cannot establish its provenance.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -42,6 +45,7 @@ FLAGS = [
     "--mlir-print-ir-after-failure",
     "--mlir-print-stacktrace-on-diagnostic",
 ]
+TRACE_FLAG = "--mlir-print-ir-before-all"
 
 
 def _sha256(path: Path) -> str:
@@ -132,6 +136,72 @@ def _stderr_info(path: Path) -> tuple[bool, list[str]]:
     return fatal_seen, excerpt
 
 
+def _pass_trace_info(directory: Path) -> dict:
+    """Keep the last Before block on disk, never load a complete dump in RAM.
+
+    The printed block is context for diagnosis, not necessarily standalone or
+    parseable MLIR: the compiler can abort partway through printing. stderr is
+    preferred; stdout is inspected for IR only if stderr contains no headers.
+    """
+    destination = directory / "last-before.mlir"
+    result = {"source": None, "before_header_count": 0, "last_pass_headers": [],
+              "last_before_ir": None, "last_before_bytes": 0,
+              "last_before_content_lines": 0,
+              "first_error": None, "trace_unsupported": False,
+              "plan_memory_fatal": False}
+    for filename in ("stderr.log", "stdout.log"):
+        headers = deque(maxlen=5)
+        count = 0
+        content_lines = 0
+        writing = False
+        block = None
+        try:
+            with (directory / filename).open(errors="replace") as stream:
+                for line in stream:
+                    stripped = line.strip()
+                    result["plan_memory_fatal"] |= FATAL in line
+                    diagnostic = bool(re.search(
+                        r"(?:\berror\s*:|\bLLVM ERROR\s*:|\bfatal error\s*:)",
+                        line, flags=re.IGNORECASE,
+                    ))
+                    if diagnostic and result["first_error"] is None:
+                        result["first_error"] = stripped[:500]
+                    if ("mlir-print-ir-before-all" in line and re.search(
+                            r"unknown|unrecognized|unsupported|invalid.*(?:option|argument)",
+                            line, flags=re.IGNORECASE)):
+                        result["trace_unsupported"] = True
+                        if result["first_error"] is None:
+                            result["first_error"] = stripped[:500]
+                    # Header lines are comments in MLIR's pass instrumentation.
+                    is_header = stripped.startswith("//") and "IR Dump " in stripped
+                    if is_header:
+                        if block is not None:
+                            block.close()
+                            block = None
+                        writing = bool(re.search(r"\bIR Dump Before\b", stripped))
+                        if writing:
+                            count += 1
+                            content_lines = 0
+                            headers.append(stripped[:500])
+                            block = destination.open("w")
+                    if diagnostic or FATAL in line:
+                        writing = False
+                    if writing and block is not None:
+                        block.write(line)
+                        content_lines += bool(stripped and not stripped.startswith("//"))
+        finally:
+            if block is not None:
+                block.close()
+        if count:
+            result.update({"source": filename, "before_header_count": count,
+                           "last_pass_headers": list(headers),
+                           "last_before_ir": str(destination),
+                           "last_before_content_lines": content_lines,
+                           "last_before_bytes": destination.stat().st_size})
+            break
+    return result
+
+
 def _disable_core_dump() -> None:
     # Called only in the single-threaded POSIX child immediately before exec.
     # An expected SIGABRT should not create a large core in the original cwd.
@@ -147,7 +217,8 @@ def _is_compiler_binary(path: Path) -> bool:
         return stream.read(4) == b"\x7fELF"
 
 
-def _compile(name: str, command: list[str], cwd: Path, root: Path, timeout: float) -> dict:
+def _compile(name: str, command: list[str], cwd: Path, root: Path, timeout: float,
+             extra_flags: tuple[str, ...] = ()) -> dict:
     directory = root / name
     directory.mkdir()
     command = command.copy()
@@ -155,6 +226,7 @@ def _compile(name: str, command: list[str], cwd: Path, root: Path, timeout: floa
     command[-1] = str(directory / "kernel")
     if name == "multi_buffer_off":
         command[3] = "--enable-auto-multi-buffer=False"
+    command[-2:-2] = extra_flags
     _write_json(directory / "command.json", {"argv": command, "cwd": str(cwd)})
     started = time.monotonic()
     result = {"name": name, "returncode": None, "timed_out": False,
@@ -206,12 +278,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=180)
     parser.add_argument("--record-index", type=int,
                         help="zero-based nonempty JSONL record index (including score records)")
+    parser.add_argument("--dump-pass-ir", action="store_true",
+                        help="one baseline compile adding only --mlir-print-ir-before-all; "
+                             "retain the last Before IR locally, without a multi-buffer variant")
     parser.add_argument("--expected-compiler-sha256", type=_digest_argument,
                         default=EXPECTED_COMPILER_SHA256)
     args = parser.parse_args(argv)
     root = None
     summary = {"no_device_execution": True, "npu_acceptance": False,
-               "status": "provenance_error", "results": []}
+               "status": "provenance_error", "results": [],
+               "mode": "pass_trace" if args.dump_pass_ir else "multi_buffer_comparison"}
     try:
         if os.name != "posix":
             raise ValueError("this replay requires POSIX process-group control")
@@ -266,16 +342,46 @@ def main(argv: list[str] | None = None) -> int:
                 "ASCEND_TOOLKIT_HOME", "ASCEND_RT_VISIBLE_DEVICES", "TRITON_CACHE_DIR",
             )},
             "no_device_execution": True,
+            "mode": summary["mode"],
         }
         _write_json(root / "manifest.json", manifest)
         summary.update({"status": "running_baseline", "compiler_sha256": compiler_hash,
                         "ir_sha256": source_hash, "symbol": kernel_symbols[0]})
         _write_json(root / "summary.json", summary)
-        baseline = _compile("baseline", command, cwd, root, args.timeout)
+        baseline = _compile(
+            "pass_trace" if args.dump_pass_ir else "baseline", command, cwd, root,
+            args.timeout, extra_flags=(TRACE_FLAG,) if args.dump_pass_ir else (),
+        )
         summary["results"].append(baseline)
+        if args.dump_pass_ir:
+            if (_sha256(compiler) != compiler_hash
+                    or _sha256(root / "input.ttadapter.mlir") != source_hash):
+                raise ValueError("compiler or copied IR changed during pass trace")
+            trace = _pass_trace_info(root / "pass_trace")
+            summary["pass_trace"] = trace
+            baseline["plan_memory_fatal"] |= trace["plan_memory_fatal"]
+            # The first ordinary stderr lines may now be whole tensor constants.
+            # Compact summaries must contain diagnostics, never arbitrary IR.
+            baseline["stderr_excerpt"] = ([trace["first_error"]]
+                                          if trace["first_error"] else [])
+            _write_json(root / "pass_trace" / "result.json", baseline)
         reproduced = (baseline["returncode"] == -6 and baseline["plan_memory_fatal"]
                       and not baseline["timed_out"])
-        if not reproduced:
+        if args.dump_pass_ir:
+            if trace["trace_unsupported"]:
+                summary["status"] = "pass_trace_unsupported"
+                code = 1
+            elif not trace["before_header_count"] or not trace["last_before_content_lines"]:
+                summary["status"] = "pass_trace_missing"
+                code = 1
+            elif not reproduced:
+                summary["status"] = "pass_trace_original_failure_not_reproduced"
+                code = 1
+            else:
+                summary["status"] = "pass_trace_captured_original_failure"
+                # Only collection completed; the compiler still failed.
+                code = 0
+        elif not reproduced:
             summary["status"] = "baseline_not_reproduced_variant_not_run"
             code = 1
         else:
@@ -324,6 +430,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {result['stderr_excerpt'][0][:300]}")
         if result["start_error"]:
             print(f"  start_error: {result['start_error'][:300]}")
+    if "pass_trace" in summary:
+        trace = summary["pass_trace"]
+        print(f"pass_headers: {trace['before_header_count']}, source: {trace['source']}")
+        for header in trace["last_pass_headers"]:
+            print(f"  {header[:300]}")
+        print(f"last_before_ir_saved: {bool(trace['last_before_ir'])}; "
+              "full IR remains in the local output directory")
     print("No device code executed; this is not NPU acceptance.")
     return code
 
