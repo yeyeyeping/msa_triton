@@ -76,7 +76,7 @@ Indexer 存在 Triton score、score preparation 和 top-k mask 路径；部分�
   `row = (cu_block_lens[sequence] + local_block) * G + group`。
 - 本地行指针为 `[R*G+1]`，边记录按行组织 query/slot；它与上游 `[G,R+1]` 的物理布局不兼容，不作二进制接口复用。
 - Forward 保持 query 所有权，沿该 query 的 selected blocks 做 online softmax，输出 FP32 LSE；backward 保存 FP32 O 和 max/denominator，避免从舍入后的 LSE 恢复概率。
-- dQ 保持 query 所有权，并输出中心化 softmax backward 所需的统计；dK/dV 使用 k2q，让每个 key token/group 遍历其所属 KV block 行中的 queries 以及该 group 的主 query heads。按 32 个 queries 分块，以 FP32 补偿归约后独占写出 dK/dV，公共路径无需浮点 atomic。
+- dQ 保持 query 所有权，并输出中心化 softmax backward 所需的统计；dK/dV 使用 k2q，让每个 key token/group 遍历其所属 KV block 行中的 queries 以及该 group 的主 query heads。初版按 32 个 queries 分块并补偿归约；`df31a1d` 候选改为逐 query 的 `[D]` TwoSum 累加以绕开旧树结构，仍独占写出 dK/dV，公共路径无需浮点 atomic。修改依据与验证边界见[调试复盘](debugging_retrospective.md)。
 - CSR 只从本次 forward 的 indices 构建；backward 不重新 top-k，不对整数索引求梯度。
 
 保留 query forward 是当前训练适配的取舍。若以后使用 KV-gather-Q forward，一个 query 的不同 KV 分片必须正确合并 softmax 统计和 partial output，不能直接相加各块独立 softmax 后的输出；其工作区和收益需在 A3 上实测。本轮并不把上游推理的可选 vendor 调用替换为训练实现。

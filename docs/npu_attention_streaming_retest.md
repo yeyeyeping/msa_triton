@@ -1,4 +1,11 @@
-# 当前任务：attention 逐 query 补偿累加候选复测
+# Attention 逐 query 补偿累加：NPU 复测协议与结果
+
+> 2026-09-29 更新：用户明确确认 `df31a1d` 的下述 48 项 NPU 测试全部通过。
+> 本轮 attention 验证完成，无需因本文再次重跑。未收到新的耗时、退出码、
+> 日志目录和环境重核记录，不补写这些字段。score 仍未解决，全 MSA 与性能
+> 尚未验收。完整过程见[调试复盘](debugging_retrospective.md)。
+
+下文保留当时交给执行代理的协议，供复现与解释结果。
 
 交给 NPU 机器上的 GLM 5.2 执行。本轮只测试正式 attention 路径；score 的
 507035 非法地址故障仍未解决。**全部通过也只代表下述 attention 用例通过，
@@ -18,7 +25,8 @@
 正式候选改为逐 CSR query、逐同组 head 累加 `[D]` 梯度向量，使用 FP32
 TwoSum 高低两部分并关闭该 KV kernel 的浮点融合。保留 center/mass 精化、
 独立 dQ/dK/dV、int64 寻址以及公共 TND 接口。减少同时存活的张量并非保证
-Ascend 编译成功；串行 query 循环可能降低性能，须在正确性通过后实测。
+Ascend 编译成功；本轮通过结论来自后续 48 项实机确认。串行 query 循环
+可能降低性能，吞吐仍须另行实测。
 
 ## 执行
 

@@ -64,8 +64,10 @@ reshape/permute/split 实现，数学次序不变。实机状态及复测命令�
 故障，后续证据见 `npu_retest_20260929.md`。六项结构对照后，attention
 改为逐 CSR query 的 `[D]` TwoSum 累加候选，避免生产路径的 32 行补偿树；
 该 KV kernel 禁用浮点融合，保留概率精化与原接口。此实现降低 query
-并行度，NPU 编译、数值和性能仍待验证。普通 tile sum + Kahan 已有丢失
-`2^-12` 梯度残差的反例，不能采用。当前复测见 `npu_attention_streaming_retest.md`。
+并行度。用户于 2026-09-29 确认 `df31a1d` 的 48 项 attention NPU 测试
+全部通过，性能尚未验证，score 仍未解决。普通 tile sum + Kahan 已有丢失
+`2^-12` 梯度残差的反例，不能采用。过程见 `debugging_retrospective.md`，
+复测协议与结果见 `npu_attention_streaming_retest.md`。
 首版采用可移植、易验证的 kernel，不承诺在 A3 上已经获得速度提升。
 
 参考 vLLM-Ascend 的反向邻接思想，具体来源和差异见 `vllm_ascend_k2q.md`。

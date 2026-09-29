@@ -1,18 +1,19 @@
 # MiniMax M3 TND sparse attention
 
 独立实现 MiniMax M3 的三阶段接口，目标设备为 Ascend 910C/A3。当前版本是
-独立算子实现，正在进行 NPU 适配。**当前未通过 NPU 验收**；CPU 解释器
-结果不代表 NPU 编译、调优或性能验收。
+独立算子实现，正在进行 NPU 适配。**attention 已获用户确认通过 48 项 NPU
+测试，score 的非法地址故障仍未解决，全 MSA 尚未通过验收。** 性能尚未验收。
 
 * `eager/`：迁移 Transformers BSND 数学，以可微 unpack/pack 提供 TND 接口。
 * `triton/`：score、attention 的 TND Triton 前反向；top-k 使用设备原生 `torch.topk`。
   attention backward 使用 k2q CSR 组织 dK/dV，不通过公共路径的浮点 atomic 累加。
 * `tests/reference_fp64.py`：独立 CPU FP64 前反向基准。
 * [实施计划](docs/implementation_plan.md)、[训练与 KL 流程](docs/msa_training_flow.md)、
+  [完整实现与调试复盘](docs/debugging_retrospective.md)、
   [验证方法及限制](docs/validation.md)、[必要修复记录](docs/correctness_fixes.md)、
   [NPU 首轮失败与复测步骤](docs/npu_validation_20260928.md)、
   [NPU 候选复测失败与取证](docs/npu_retest_20260929.md)、
-  [当前 attention 候选复测（48 项、短回传）](docs/npu_attention_streaming_retest.md)、
+  [attention NPU 复测协议与结果（48 项）](docs/npu_attention_streaming_retest.md)、
   [attention 离线编译短结果诊断](docs/npu_attention_compile_probe.md)、
   [给 NPU 执行代理的完整任务](docs/npu_glm_execution.md)、
   [vLLM-Ascend k2q 参考与适配](docs/vllm_ascend_k2q.md)。
@@ -31,10 +32,10 @@ score blocking 10/10、non-blocking 10/10 次设备异常。B/C/D 未执行。
 
 后续六项 NPU 结构对照为 **5 failed / 1 passed**。唯一通过的 tile-sum +
 Kahan 在新增消减反例中丢失梯度残差，未采用。新 attention 候选改为逐
-CSR query 的向量 TwoSum 累加，保留概率精化、接口和精度门禁。**NPU 尚未
-复测，score 非法地址故障仍未解决**；串行 query 的性能代价亦待实测。
-下一步只执行 [48 项 attention 测试](docs/npu_attention_streaming_retest.md)，
-无需重复旧消融或回传大量 IR。
+CSR query 的向量 TwoSum 累加，保留概率精化、接口和精度门禁。用户于
+2026-09-29 明确确认 `df31a1d` 的 **48 项 attention NPU 测试全部通过**。
+详细过程见[完整调试复盘](docs/debugging_retrospective.md)。score 非法地址
+故障仍未解决，串行 query 的性能代价亦待实测。
 新候选的本机 CPU interpreter 回归为 **157 passed，0 failed，0 skipped**，
 41 个 CUDA sm80 离线编译变体通过；均不包含 NPU 编译或执行。
 
@@ -93,8 +94,8 @@ python -m msa_triton.benchmark --device npu --lengths 8192 16384 32768 --backwar
 
 Benchmark 分别记录 score、top-k、k2q CSR 构建、attention 和组合前向耗时；
 `--backward` 额外记录 score/attention 的前向加反向耗时，后者包含 CSR 构建。
-当前应先按 [attention 候选复测步骤](docs/npu_attention_streaming_retest.md) 排查失败并通过数值
-验收，再进行长序列性能测试。
+attention 的 [48 项复测](docs/npu_attention_streaming_retest.md)已由用户确认
+通过；仍须解决 score、完成全量数值验收，再进行长序列性能测试。
 
 BF16 native eager 会在 QK 和 softmax 概率处舍入，与一次 FP64 计算最后才舍入
 并不等价。因此测试分别验证 native BSND 适配一致性、Triton 对 FP64 的严格

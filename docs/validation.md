@@ -1,10 +1,8 @@
 # 验证层次、精度和设备限制
 
-> 最新状态：2026-09-29 用户回传的 `8649b73` 候选复测仍失败，attention
-> 3/3 次编译崩溃，score blocking 10/10、non-blocking 10/10 次设备异常。
-> 后续 B/C/D 未执行。六项结构对照后已产生逐 query TwoSum 的 attention
-> 候选，NPU 仍待验证，score 仍未解决。下文 CPU 通过记录不覆盖设备故障。
-> 当前执行 [48 项 attention 候选复测](npu_attention_streaming_retest.md)。
+> 最新状态：2026-09-29 用户明确确认 `df31a1d` 的 48 项 attention NPU
+> 测试全部通过。score 非法 GM 地址仍未解决，全 MSA 与性能尚未验收。
+> 下文旧候选失败记录按版本保留。完整过程见[调试复盘](debugging_retrospective.md)。
 
 ## 数值门禁
 
@@ -237,7 +235,21 @@ legacy/current 诊断在 CPU 全部通过，仅验证 runner 与相应数学路�
 覆盖 NPU 上已经观察到的 legacy 编译失败。Python compileall、48 项远端
 attention 测试收集、文档本地链接与候选哈希检查均通过。
 
-当前仍没有本机 NPU，串行 query 的吞吐与 Ascend 编译兼容性未知。
-**attention 新候选待复测，score 非法 GM 地址尚未解决，MSA NPU 验收仍未通过。**
-下一步执行 [48 项 attention 复测](npu_attention_streaming_retest.md)，
-只需回传短摘要，不重复旧取证和消融。
+本机仍没有 NPU，以上记录为本机 CPU 与离线编译验证；串行 query 的设备
+吞吐尚未测量。后续实机确认见下节。
+
+## 2026-09-29 attention NPU 复测通过（用户确认）
+
+针对明确指向 `df31a1d` 的确认问题，用户答复：“48 项 NPU 测试全部通过”。
+测试范围为 4 个生产累加 helper 和 44 个 attention 用例，包含原 D=128
+失败节点、不同长度/GQA/独立梯度、长序列 BF16 舍入及 12 个消减回归。
+公开精度门禁仍为 `atol=rtol=1e-4`。
+
+据此记录 **48 项通过，本轮 attention 编译、执行与数值门禁通过**。
+这是用户实机确认，本机没有执行 NPU 测试；该确认未附本轮耗时、退出码、
+日志目录或环境重核结果，本文不补造这些字段。执行协议保留在
+[npu_attention_streaming_retest.md](npu_attention_streaming_retest.md)。
+
+此结果证明新路径通过该测试范围，不等于 bishengir 具体失败 op 已定位，
+也不覆盖 score、长序列性能、并发、VeOmni 或完整模型验收。
+**score 非法 GM 地址仍未解决，全 MSA NPU 验收尚未通过。**

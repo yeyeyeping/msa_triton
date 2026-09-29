@@ -1,8 +1,9 @@
 # Attention 编译崩溃：仅回传短结果的离线对照
 
-> 六项结构对照已完成：5 failed / 1 passed。正式实现现已产生逐 query
-> TwoSum 累加候选，**当前执行 [48 项 attention 候选复测](npu_attention_streaming_retest.md)**。
-> 本文保留取证历史，不再重复 A/B、pass dump 或旧六项对照。
+> 六项结构对照已完成：5 failed / 1 passed。后续逐 query TwoSum 实现
+> `df31a1d` 的 **48 项 attention NPU 测试已由用户确认全部通过**，见
+> [完整调试复盘](debugging_retrospective.md)。本文保留取证历史，不再
+> 重复 A/B、pass dump 或旧六项对照；score 故障仍独立未解决。
 
 ## 六项对照结果与新候选
 
@@ -18,7 +19,8 @@
 仅拆分 DK/DV 无效。移除行树的对照通过，为绕开该 IR 结构提供依据，但不能
 把树的独立 compile_error 等同于已证明的同一 PlanMemory 根因。进一步 CPU
 反例发现 tile-sum + Kahan 会丢失 `2^-12` 的 dK/dV 残差，不能作为正式修复。
-新候选逐 query 累加 `[D]` 向量并保留 TwoSum；NPU 仍待验证。
+后续实现逐 query 累加 `[D]` 向量并保留 TwoSum，用户已确认其 48 项 NPU
+测试全部通过。该结果不反向证明旧树的具体失败 op 或 UB 容量假说。
 
 ## 已确认的 pass 信息与尚未成立的内存判断
 

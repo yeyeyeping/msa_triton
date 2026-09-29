@@ -1,9 +1,10 @@
 # 给 NPU 机器上 GLM 5.2 的执行任务
 
 > 2026-09-29：本文针对 `8649b73` 的 A 阶段已执行，两个故障均复现。
-> 当前按 [48 项 attention 新候选任务](npu_attention_streaming_retest.md)执行，
-> 不重复下方测试。本文保留原协议及旧哈希，用于解释已采集结果；这些哈希
-> 不适用于新的逐 query 累加候选。
+> 后续 `df31a1d` 的 [48 项 attention 复测](npu_attention_streaming_retest.md)
+> 已由用户确认全部通过；score 仍未解决。不重复下方历史测试。
+> 本文保留原协议及旧哈希，用于解释已采集结果；这些哈希不适用于新的
+> 逐 query 累加实现。完整过程见[调试复盘](debugging_retrospective.md)。
 
 ## 1. 任务与本次改动
 
