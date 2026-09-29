@@ -2,9 +2,40 @@
 
 > 最新回传：baseline 与 `multi_buffer_off` 均以 -6 退出，包含相同
 > `PlanMemory Traverse IR Failed`。单独关闭 multi-buffer 无效。
-> 随后回传的 5 行 IR 展示 UB 分配、vadd/store 和 subloop 结束，仍没有
-> op 级错误位置。**当前执行下方六个结构对照**，只回传控制台摘要；不再
+> 后续短摘要确认最后一个 pass 为 `hivm-plan-memory`，仍没有 op 级
+> 错误位置。**当前执行下方六个结构对照**，只回传控制台摘要；不再
 > 重复 A/B 或 pass dump。
+
+## 已确认的 pass 信息与尚未成立的内存判断
+
+用户回传 `IR_MATCH=confirmed`、`pass_trace_captured_original_failure`，
+编译返回码 -6。共打印 235 个 before-pass 标题，最后五个依次为：
+
+```text
+canonicalize-ext
+memref-dse
+hivm-inline-load-copy
+hivm-mark-multi-buffer
+hivm-plan-memory
+```
+
+据回传摘要，最后的 IR 为 2110 行 module，唯一函数是具有 18 个参数的
+`_backward_kv_kernel`，AIV core；无 op 级 error/note/warning。这确认了
+崩溃 pass，但本机仍没有完整 IR，不能据尾部几行定位出错操作。
+
+报告中的“1953 个 address_space<ub> 操作（UB 分配）”需要区分统计口径：
+该地址空间类型也会出现在同一缓冲的 view、运算参数、load/store 中，
+出现次数不等于 `memref.alloc` 定义数，更不等于同时存活的 UB 字节数。
+`multi_buffer=2` 标记也不能单独证明容量不足。
+
+当前上游 [PlanMemory.cpp](https://github.com/Ascend/AscendNPU-IR/blob/master/bishengir/lib/Dialect/HIVM/Transforms/PlanMemory.cpp)
+在 IR 遍历被中断时产生这个 fatal；相关检查包括分配的地址空间及无法识别的
+本地 buffer 操作，并非直接报告容量耗尽。公开源码不能替代实际二进制的
+定位，但“内存规划 pass 失败”不应直接写成“UB 内存不足”。先前关闭
+multi-buffer 仍失败，也不能支持“仅双缓冲容量导致”的解释。
+
+无需为修正这个判断额外回传计数或重跑 dump。下一步仍为现有六项结构对照，
+当前尚未收到其 NPU 结果；生产内核没有基于 UB 容量猜测做修改。
 
 ## 对最新 IR 片段的判断
 

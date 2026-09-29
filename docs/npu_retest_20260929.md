@@ -14,6 +14,8 @@
 同一 `PlanMemory Traverse IR Failed`。该选项不能单独绕过错误，下一步
 采集崩溃前 pass 的局部 IR。后续收到的 UB alloc/vadd/store 尾部片段仍无
 op 级定位，当前启用已准备的六项结构对照，详见上方任务文档。
+再补充的 trace 摘要确认 235 个 pass 标题中最后一个为 `hivm-plan-memory`，
+但没有具体 op 错误；UB 类型出现次数不构成分配数量或容量不足的证据。
 生产内核尚未产生新的修复候选。
 
 本次测试针对 `fix/npu-portability` 的
