@@ -61,7 +61,11 @@ NPU 首轮验收失败后的候选：score 直接归约序列起止边界，消�
 读取，并在指针构造前钳制 masked lane；attention 的相邻行补偿树用静态
 reshape/permute/split 实现，数学次序不变。实机状态及复测命令见
 `npu_validation_20260928.md`。2026-09-29 回传确认两项候选均未解决设备
-故障，后续先分析原始异常链与 IR，见 `npu_retest_20260929.md`。
+故障，后续证据见 `npu_retest_20260929.md`。六项结构对照后，attention
+改为逐 CSR query 的 `[D]` TwoSum 累加候选，避免生产路径的 32 行补偿树；
+该 KV kernel 禁用浮点融合，保留概率精化与原接口。此实现降低 query
+并行度，NPU 编译、数值和性能仍待验证。普通 tile sum + Kahan 已有丢失
+`2^-12` 梯度残差的反例，不能采用。当前复测见 `npu_attention_streaming_retest.md`。
 首版采用可移植、易验证的 kernel，不承诺在 A3 上已经获得速度提升。
 
 参考 vLLM-Ascend 的反向邻接思想，具体来源和差异见 `vllm_ascend_k2q.md`。

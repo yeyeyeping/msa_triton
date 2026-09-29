@@ -2,8 +2,9 @@
 
 > 最新状态：2026-09-29 用户回传的 `8649b73` 候选复测仍失败，attention
 > 3/3 次编译崩溃，score blocking 10/10、non-blocking 10/10 次设备异常。
-> 后续 B/C/D 未执行。下文历史 CPU 通过记录不覆盖这些设备故障，详见
-> [复测失败记录与取证任务](npu_retest_20260929.md)。
+> 后续 B/C/D 未执行。六项结构对照后已产生逐 query TwoSum 的 attention
+> 候选，NPU 仍待验证，score 仍未解决。下文 CPU 通过记录不覆盖设备故障。
+> 当前执行 [48 项 attention 候选复测](npu_attention_streaming_retest.md)。
 
 ## 数值门禁
 
@@ -205,3 +206,38 @@ xfail、xpass、超时或崩溃计为通过。Python compileall 与文档本地�
 **候选已于 2026-09-29 回传 NPU 复测失败结果，NPU 验收状态保持失败。**
 具体结果见 [npu_retest_20260929.md](npu_retest_20260929.md)。本机耗时变化
 不用于推断 NPU 加速比。
+
+## 六项结构对照后的逐 query 累加候选
+
+用户在 `6d47514` 上运行的 NPU 六项对照为 **5 failed / 1 passed**，并非
+attention 或 MSA 验收通过。进一步 CPU 消融显示，tile-sum + Kahan 丢失
+`2^-12` 的 dK/dV 残差，新增 12 项精度回归全部失败；历史补偿树则通过这
+12 项。因此正式候选保留补偿，改为逐 CSR query 的 `[D]` TwoSum 累加，
+KV kernel 禁用浮点融合。改动与数值反例见 [修复记录](correctness_fixes.md)。
+
+conda `veomni`、CPU Triton interpreter 完整回归：**157 passed，0 failed，
+0 skipped，439.58 秒**，退出码 0。命令为：
+
+```bash
+source /home/yeep/env/miniconda/etc/profile.d/conda.sh
+conda activate veomni
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 MSA_TEST_DEVICE=cpu TRITON_INTERPRET=1 \
+python -m pytest msa_triton/tests -q -o addopts=
+```
+
+相对历史 145 项，attention 新增 12 个消减用例；4 个归约 helper 用例由
+树配对检查改为真实生产单 FP32 贡献流，对照独立 `math.fsum`。其最终版本
+直接传入常量 `b_lo=0.0`，另行复跑 **4 passed，1.20 秒**。旧树精确 hi/lo
+测试仍保留在显式诊断文件中。正式公开 API 门禁仍为 `atol=rtol=1e-4`，
+未放宽；本轮 795 条上游 NumPy 标量转换弃用 warning 未屏蔽。
+
+新 KV 的联合/独立梯度组合及原报告 D=128 特化，通过 **41 个 CUDA sm80
+离线编译变体**；编译选项与生产 KV 一致，关闭浮点融合。7 项隔离进程
+legacy/current 诊断在 CPU 全部通过，仅验证 runner 与相应数学路径；不能
+覆盖 NPU 上已经观察到的 legacy 编译失败。Python compileall、48 项远端
+attention 测试收集、文档本地链接与候选哈希检查均通过。
+
+当前仍没有本机 NPU，串行 query 的吞吐与 Ascend 编译兼容性未知。
+**attention 新候选待复测，score 非法 GM 地址尚未解决，MSA NPU 验收仍未通过。**
+下一步执行 [48 项 attention 复测](npu_attention_streaming_retest.md)，
+只需回传短摘要，不重复旧取证和消融。

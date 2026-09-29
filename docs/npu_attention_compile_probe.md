@@ -1,10 +1,24 @@
 # Attention 编译崩溃：仅回传短结果的离线对照
 
-> 最新回传：baseline 与 `multi_buffer_off` 均以 -6 退出，包含相同
-> `PlanMemory Traverse IR Failed`。单独关闭 multi-buffer 无效。
-> 后续短摘要确认最后一个 pass 为 `hivm-plan-memory`，仍没有 op 级
-> 错误位置。**当前执行下方六个结构对照**，只回传控制台摘要；不再
-> 重复 A/B 或 pass dump。
+> 六项结构对照已完成：5 failed / 1 passed。正式实现现已产生逐 query
+> TwoSum 累加候选，**当前执行 [48 项 attention 候选复测](npu_attention_streaming_retest.md)**。
+> 本文保留取证历史，不再重复 A/B、pass dump 或旧六项对照。
+
+## 六项对照结果与新候选
+
+用户回传源码 `6d4751489a0fe0e1140f42dbd5571b07537dabbe`：
+
+| 历史用例 | NPU 结果 |
+|---|---|
+| tree-d128 | compile_error；独立树不能编译，摘要未给出具体错误类型 |
+| qkv-d128 / qk-d128 / qv-d128 | KV launch 的 compile_plan_memory |
+| split-kv-d128 | 第一次 DK launch 的 compile_plan_memory |
+| tile-sum-kahan-d128 | 完成该样例的数值门禁 |
+
+仅拆分 DK/DV 无效。移除行树的对照通过，为绕开该 IR 结构提供依据，但不能
+把树的独立 compile_error 等同于已证明的同一 PlanMemory 根因。进一步 CPU
+反例发现 tile-sum + Kahan 会丢失 `2^-12` 的 dK/dV 残差，不能作为正式修复。
+新候选逐 query 累加 `[D]` 向量并保留 TwoSum；NPU 仍待验证。
 
 ## 已确认的 pass 信息与尚未成立的内存判断
 
@@ -34,8 +48,8 @@ hivm-plan-memory
 定位，但“内存规划 pass 失败”不应直接写成“UB 内存不足”。先前关闭
 multi-buffer 仍失败，也不能支持“仅双缓冲容量导致”的解释。
 
-无需为修正这个判断额外回传计数或重跑 dump。下一步仍为现有六项结构对照，
-当前尚未收到其 NPU 结果；生产内核没有基于 UB 容量猜测做修改。
+无需为修正这个判断额外回传计数或重跑 dump。六项结果见文首；生产候选
+依据结构对照与数值反例产生，并不假定已经证明 UB 容量不足。
 
 ## 对最新 IR 片段的判断
 
@@ -53,7 +67,7 @@ multi-buffer 仍失败，也不能支持“仅双缓冲容量导致”的解释�
 
 ## 已有取证步骤：一次离线编译，提取最后一个 pass 的 IR
 
-本节保留命令背景，当前不用再次执行。直接跳到下一节六个结构对照。
+本节保留命令背景，当前不用再次执行。
 
 沿用刚才已成功运行的 `--exception-chain`、`--ir`、`--ir-sha256`、`--cwd`
 参数，更新分支脚本后，**只增加 `--dump-pass-ir`**。若之前手动指定了
@@ -90,9 +104,9 @@ multi-buffer 仍失败，也不能支持“仅双缓冲容量导致”的解释�
 4. 不支持参数、没有 dump 或遇到不同错误时，回传短状态和错误首行即可。
    暂不自动升级环境、添加其他开关或继续全量测试。
 
-## 当前任务：六个结构对照
+## 历史任务：六个结构对照（已完成）
 
-现有 IR 片段仍无法定位，运行以下已有工具。每个用例在独立进程中执行，原始
+当时 IR 片段仍无法定位，因此运行以下工具。每个用例在独立进程中执行，原始
 输入与精度门禁保留，源码中的实验修改仅在对应进程生效。
 
 | 用例 | 验证内容 |
@@ -114,7 +128,7 @@ ASCEND_RT_VISIBLE_DEVICES=15 \
 仍从项目父目录和原 CANN 环境运行，只回传控制台摘要。runner 将完整日志、
 IR/cache、临时消融源码和 JSON 保存在新的 `/tmp/msa-att-scope-*` 中。
 出现设备运行异常时停止后续用例；编译失败可以继续下一个独立进程。
-常规 pytest 收集数量仍为 145，这六项需显式选中，不作为新增 NPU 验收结果。
+该历史版本常规 pytest 收集数量为 145，六项需显式选中，不作为新增 NPU 验收结果。
 沿用此前能访问卡 15 的权限环境。回传六条 `用例: 状态 reason=... STAGE=...`
 及最后的 `Status:`；若提前停止，保留 `not_run`，不补猜未执行结果。
 已有 pass 标题可以额外附一行，但不用因此重新跑编译或回传大量 IR。
@@ -122,6 +136,13 @@ IR/cache、临时消融源码和 JSON 保存在新的 `/tmp/msa-att-scope-*` 中
 split 对照通过只能支持进一步验证拆分 launch；不能证明是 UB 容量不足。
 孤立 tree 通过也不能排除它与循环/周边 IR 组合的问题。Kahan 会改变归约
 次序，即使一个 shape 通过，也不能直接替换生产实现。
+
+新版本的诊断 runner 已分为七项：`legacy-tree-d128`、`legacy-qkv-d128`、
+`current-qkv-d128`、`current-qk-d128`、`current-qv-d128`、
+`current-split-kv-d128`、`tile-sum-kahan-d128`。历史 KV 三个函数固定保存
+在 `tests/_attention_tree_reference.py`，不依赖已删除的生产树 helper。
+该 runner 供明确需要时比较，不是本轮要求，也不能把 legacy 预期失败计入
+正式候选验收。
 
 ## 已收到的证据
 

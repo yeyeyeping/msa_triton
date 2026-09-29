@@ -1,16 +1,18 @@
-"""Run review ablations in temporary source copies, leaving kernels unchanged.
+"""Run explicit diagnostic kernel ablations, leaving production files unchanged.
 
 TRITON_INTERPRET=1 python -m msa_triton.tests.probe_attention_ablation \
     --mode no-center --case dim128
 
-The no-center dim128 probe currently fails the unchanged FP64 accuracy test.
-This script forwards pytest's exit code; it is not part of normal collection.
-The source transforms are specific to the reviewed implementation and should
-be re-reviewed if that implementation changes.
+No-center modifies the current query prepass. Tile-sum-Kahan modifies only the
+frozen 6d47514 KV tree; it is a historical compiler comparison with known failures
+on the cancellation tests, not an accepted implementation. This script forwards
+pytest's exit code and is excluded from normal test discovery.
 """
 
 import argparse
+import importlib
 import importlib.util
+import inspect
 from pathlib import Path
 import sys
 import tempfile
@@ -35,6 +37,8 @@ def ablate(source, mode):
             "        if COMPUTE_DQ or ACCUMULATE_KV:\n",
             "",
         )
+    if mode != "tile-sum-kahan":
+        raise ValueError(f"Unknown attention ablation: {mode}")
     replacement = """            if COMPUTE_DK:
                 grad_probability = tl.sum(grad_output * value[None, :], 1)
                 grad_logits = probability * ((grad_probability - center) - centered_delta) * SCALE
@@ -64,37 +68,47 @@ def ablate(source, mode):
     return source
 
 
+def _query_ablation(module, directory):
+    source = "from __future__ import annotations\n\n"
+    source += ablate(inspect.getsource(module._backward_kernel), "no-center")
+    path = Path(directory) / "attention_query_no_center.py"
+    path.write_text(source)
+    name = "msa_triton.tests._temporary_attention_query_no_center"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Could not load query-prepass ablation")
+    copy = importlib.util.module_from_spec(spec)
+    sys.modules[name] = copy
+    spec.loader.exec_module(copy)
+    copy.tl, copy._tnd_offset = module.tl, module._tnd_offset
+    return module._kernels()[0].jit(copy._backward_kernel)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("no-center", "tile-sum-kahan"), required=True)
-    parser.add_argument("--case", choices=("dim128", "matrix", "rounding"), default="dim128")
+    parser.add_argument("--case", choices=("dim128", "matrix", "rounding", "cancellation"), default="dim128")
     args = parser.parse_args()
     package = Path(__file__).resolve().parents[1]
-    source = (package / "triton" / "sparse_attention.py").read_text()
-    source = ablate(source, args.mode)
     expression = {
         "dim128": "forward_backward_against_fp64 and lengths6",
         "matrix": "forward_backward_against_fp64",
         "rounding": "long_key_accumulation_bf16_rounding_regression",
+        "cancellation": "kv_within_tile_cancellation_against_fp64",
     }[args.case]
-    with tempfile.TemporaryDirectory(prefix="msa-review-") as directory:
-        path = Path(directory) / "attention_ablation.py"
-        path.write_text(source)
-        name = "msa_triton.triton._review_attention_ablation"
-        spec = importlib.util.spec_from_file_location(name, path)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
+    module = importlib.import_module("msa_triton.triton.sparse_attention")
+    with tempfile.TemporaryDirectory(prefix="msa-review-") as directory, pytest.MonkeyPatch.context() as patch:
+        kernels = list(module._kernels())
+        if args.mode == "tile-sum-kahan":
+            from msa_triton.tests._attention_tree_reference import load_legacy_kv
 
-        class OverrideImplementation:
-            def pytest_collection_modifyitems(self, items):
-                for item in items:
-                    if item.module.__name__.endswith("test_triton_attention"):
-                        item.module.m3_sparse_attention = module.m3_sparse_attention
-
+            kernels[3] = load_legacy_kv(directory, transform=lambda source: ablate(source, args.mode))
+        else:
+            kernels[2] = _query_ablation(module, directory)
+        patched = tuple(kernels)
+        patch.setattr(module, "_kernels", lambda: patched)
         return pytest.main(
             [str(package / "tests" / "test_triton_attention.py"), "-q", "-k", expression],
-            plugins=[OverrideImplementation()],
         )
 
 

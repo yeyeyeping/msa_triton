@@ -7,18 +7,27 @@
 以下结果来自用户实机执行，不是本机复现。
 
 用户无法传输大量文本；当前优先执行
-[只回传短结果的 attention 离线编译对照](npu_attention_compile_probe.md)。
+[只回传短结果的 attention 新候选复测](npu_attention_streaming_retest.md)。
 下方完整取证清单保留为参考，不要求此时全部回传。
 
 后续离线对照回传：原参数和仅关闭 auto multi-buffer 均为 returncode=-6，
-同一 `PlanMemory Traverse IR Failed`。该选项不能单独绕过错误，下一步
-采集崩溃前 pass 的局部 IR。后续收到的 UB alloc/vadd/store 尾部片段仍无
-op 级定位，当前启用已准备的六项结构对照，详见上方任务文档。
+同一 `PlanMemory Traverse IR Failed`。该选项不能单独绕过错误。后续收到
+崩溃前 pass 的摘要及 UB alloc/vadd/store 尾部片段，仍无 op 级定位。
 再补充的 trace 摘要确认 235 个 pass 标题中最后一个为 `hivm-plan-memory`，
 但没有具体 op 错误；UB 类型出现次数不构成分配数量或容量不足的证据。
-生产内核尚未产生新的修复候选。
 
-本次测试针对 `fix/npu-portability` 的
+随后 `6d47514` 的六项结构对照回传 5 failed / 1 passed：独立树编译失败，
+全梯度/QK/QV/拆分 DK-DV 仍在 KV 编译 PlanMemory 失败，tile-sum + Kahan
+仅该 D=128 用例通过。该结果没有证明具体失败 op 或 UB 容量不足。
+
+新 CPU 反例发现 tile-sum + Kahan 丢失 `2^-12` 的 dK/dV 残差，新增 12 项
+消减回归全部失败，因此不采用该消融。正式候选改为逐 CSR query 的 `[D]`
+TwoSum 累加，移除生产 32 行补偿树，保留 center/mass 精化，并关闭 KV
+kernel 浮点融合。**此候选仍待 NPU 验证，score 尚无新的修复。**
+本机结果见 [validation.md](validation.md)，改动依据和当前短复测命令见
+[新候选任务](npu_attention_streaming_retest.md)。
+
+以下历史测试针对 `fix/npu-portability` 的
 `8649b7377a00e2a512cd1b333b2385c7e274a2ed`，内核改动提交为 `ebf85cd`。
 四个核心文件 SHA256 全部匹配；报告称已跟踪源码未改动，只有测试结果
 `runs/` 未跟踪。该目录尚未出现在本机工作树。
@@ -85,10 +94,10 @@ forward 后同步失败，错误 507035，包含 scalar GM 地址超过 48 位�
 区分边界加载、Q/K 加载、输出写入、归约降低或运行时参数传递中的问题。
 不能仅由 scalar GM 字样断定是 CU 标量加载，也不能把同步模式当作修复。
 
-## 交给 GLM 5.2 的下一步任务：交付已有证据
+## 历史取证任务：交付已有证据（当前无需重做）
 
-**当前不重跑 A/B/C/D，不修改 kernel、精度阈值、编译选项或依赖版本。**
-先完成原结果包的交付；此前已经采集的文件不需要重新生成。
+本节保留当时的证据清单。此前已经采集的文件不需要重新生成，当前只执行
+文首链接的新候选任务，不要求交付完整结果包。
 
 1. 定位本次 `8649b73` 的结果目录，回报它的实际绝对路径，以及已有压缩包的
    路径、字节数和 SHA256。仅给出远端路径不代表本机已经可以读取；由用户转交
@@ -141,5 +150,5 @@ forward 后同步失败，错误 507035，包含 scalar GM 地址超过 48 位�
   kernel 正确，也不能证明 gather 就是原因。
 - 只有有证据支持的新改动才进入下一轮 NPU 小范围复测，随后恢复原数值门禁。
 
-本次仓库更新只记录失败状态和取证要求，没有新的内核修复或新的设备通过
-记录。此前 CPU interpreter 145 项、CUDA 离线编译 41 变体仍为历史回归证据。
+此前 CPU interpreter 145 项、CUDA 离线编译 41 变体是旧候选的历史回归证据。
+后续新候选及本机验证另行记录，不能覆盖上面的设备失败状态。

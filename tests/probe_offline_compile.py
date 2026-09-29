@@ -71,7 +71,7 @@ def main():
                                  COMPUTE_DV=dv, WRITE_STATS=dk or dv, ACCUMULATE_KV=False))
     for dk, dv in [(True, False), (False, True), (True, True)]:
         flags = dict(COMPUTE_DK=dk, COMPUTE_DV=dv)
-        check(kv, dict(constants, **flags))
+        check(kv, dict(constants, **flags), disable_fusion=True)
         check(finish, dict(SIZE=32768, TILE=256, **flags))
     for dk, dv in [(True, False), (False, True)]:
         check(backward, dict(constants, COMPUTE_DQ=False, COMPUTE_DK=dk,
@@ -83,7 +83,7 @@ def main():
     check(backward, dict(reported, COMPUTE_DQ=True, COMPUTE_DK=True,
                          COMPUTE_DV=True, WRITE_STATS=True, ACCUMULATE_KV=False))
     for dk, dv in [(True, False), (False, True), (True, True)]:
-        check(kv, dict(reported, COMPUTE_DK=dk, COMPUTE_DV=dv))
+        check(kv, dict(reported, COMPUTE_DK=dk, COMPUTE_DV=dv), disable_fusion=True)
     print(f"{len(compiled)} CUDA sm80 offline compile variants passed; "
           "no hardware execution or NPU compilation")
 

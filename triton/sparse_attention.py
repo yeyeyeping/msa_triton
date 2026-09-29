@@ -27,7 +27,6 @@ from msa_triton.layout import sequence_lengths
 # therefore does not require Triton or a GPU/NPU runtime.
 tl = None
 _merge_pairs = None
-_reduce_pairs = None
 _tnd_offset = None
 _advance_offset = None
 
@@ -210,20 +209,6 @@ def _merge_pairs_impl(a_hi, a_lo, b_hi, b_lo):
     return high, remainder
 
 
-def _reduce_pairs_impl(high, low, HALF: tl.constexpr, BLOCK_D: tl.constexpr):
-    """Reduce adjacent query rows, keeping both FP32 parts of each sum."""
-    # Preserve the exact (row 0 + row 1), (row 2 + row 3), ... tree without
-    # materializing gather indices at every level. This gives the compiler
-    # fixed tensor structure for the D=128 backward specialization that
-    # aborts in the reported Ascend compiler. Target validation is still
-    # required to confirm this avoids that failure; arithmetic is unchanged.
-    high_pairs = tl.permute(tl.reshape(high, (HALF, 2, BLOCK_D)), (0, 2, 1))
-    low_pairs = tl.permute(tl.reshape(low, (HALF, 2, BLOCK_D)), (0, 2, 1))
-    left_hi, right_hi = tl.split(high_pairs)
-    left_lo, right_lo = tl.split(low_pairs)
-    return _merge_pairs(left_hi, left_lo, right_hi, right_lo)
-
-
 def _backward_kv_kernel(
     Q, K, V, CU, CU_BLOCKS, ROW_PTR, QUERIES, NORMALIZERS, STATS, DOUT, DK, DV,
     H_Q: tl.constexpr, H_KV: tl.constexpr, D: tl.constexpr,
@@ -242,7 +227,6 @@ def _backward_kv_kernel(
     row_start = tl.load(ROW_PTR + row).to(tl.int64)
     row_end = tl.load(ROW_PTR + row + 1).to(tl.int64)
     ds = tl.arange(0, BLOCK_D).to(tl.int64)
-    qs = tl.arange(0, 32).to(tl.int64)
     kv_offsets = _tnd_offset(token, group, H_KV, D) + ds
     key = tl.load(K + kv_offsets, ds < D, other=0)
     if COMPUTE_DK:
@@ -251,48 +235,39 @@ def _backward_kv_kernel(
     key_lo = tl.full((BLOCK_D,), 0.0, tl.float32)
     value_hi = tl.full((BLOCK_D,), 0.0, tl.float32)
     value_lo = tl.full((BLOCK_D,), 0.0, tl.float32)
+    # Accumulate one query vector at a time. The former 32-row expansion
+    # tree generates IR that the reported Ascend compiler cannot plan. A
+    # native tile sum loses low components before cross-tile compensation
+    # can recover them, so retain TwoSum for every contribution instead.
+    # This correctness-first candidate trades query parallelism for smaller
+    # live tensors and still needs target compilation/performance validation.
     offset = row_start
     while offset < row_end:
-        csr_offsets = _advance_offset(offset, qs)
-        query_tokens = tl.load(QUERIES + csr_offsets, csr_offsets < row_end, other=0).to(tl.int64)
-        valid = (csr_offsets < row_end) & (query_tokens >= token)
-        for local_head in range(H_Q // H_KV):
-            head = group * (H_Q // H_KV) + local_head
-            head_offsets = query_tokens * H_Q + head
-            query_offsets = _tnd_offset(query_tokens[:, None], head, H_Q, D) + ds[None, :]
-            query_mask = valid[:, None] & (ds[None, :] < D)
-            query = tl.load(Q + query_offsets, query_mask, other=0)
-            grad_output = tl.load(DOUT + query_offsets, query_mask, other=0)
-            maximum = tl.load(NORMALIZERS + head_offsets * 2, valid, other=0)
-            denominator = tl.load(NORMALIZERS + head_offsets * 2 + 1, valid, other=1)
-            if COMPUTE_DK:
-                center = tl.load(STATS + head_offsets * 3, valid, other=0)
-                centered_delta = tl.load(STATS + head_offsets * 3 + 1, valid, other=0)
-            probability_mass = tl.load(STATS + head_offsets * 3 + 2, valid, other=1)
-            logits = tl.sum(query * key[None, :], 1) * SCALE
-            probability = tl.exp(tl.where(valid, logits - maximum, float("-inf"))) / denominator / probability_mass
-            zeros = tl.full((32, BLOCK_D), 0.0, tl.float32)
-            # An explicit pairwise tree also runs efficiently in the CPU
-            # interpreter, unlike a generic tuple-reduction callback.
-            if COMPUTE_DK:
-                grad_probability = tl.sum(grad_output * value[None, :], 1)
-                grad_logits = probability * ((grad_probability - center) - centered_delta) * SCALE
-                grad_key = grad_logits[:, None] * query
-                kh, kl = _reduce_pairs(grad_key, zeros, 16, BLOCK_D)
-                kh, kl = _reduce_pairs(kh, kl, 8, BLOCK_D)
-                kh, kl = _reduce_pairs(kh, kl, 4, BLOCK_D)
-                kh, kl = _reduce_pairs(kh, kl, 2, BLOCK_D)
-                kh, kl = _reduce_pairs(kh, kl, 1, BLOCK_D)
-                key_hi, key_lo = _merge_pairs(key_hi, key_lo, tl.sum(kh, 0), tl.sum(kl, 0))
-            if COMPUTE_DV:
-                grad_value = probability[:, None] * grad_output
-                vh, vl = _reduce_pairs(grad_value, zeros, 16, BLOCK_D)
-                vh, vl = _reduce_pairs(vh, vl, 8, BLOCK_D)
-                vh, vl = _reduce_pairs(vh, vl, 4, BLOCK_D)
-                vh, vl = _reduce_pairs(vh, vl, 2, BLOCK_D)
-                vh, vl = _reduce_pairs(vh, vl, 1, BLOCK_D)
-                value_hi, value_lo = _merge_pairs(value_hi, value_lo, tl.sum(vh, 0), tl.sum(vl, 0))
-        offset += 32
+        query_token = tl.load(QUERIES + offset).to(tl.int64)
+        if query_token >= token:
+            for local_head in range(H_Q // H_KV):
+                head = group * (H_Q // H_KV) + local_head
+                head_offset = query_token * H_Q + head
+                query_offsets = _tnd_offset(query_token, head, H_Q, D) + ds
+                query = tl.load(Q + query_offsets, ds < D, other=0)
+                grad_output = tl.load(DOUT + query_offsets, ds < D, other=0)
+                maximum = tl.load(NORMALIZERS + head_offset * 2)
+                denominator = tl.load(NORMALIZERS + head_offset * 2 + 1)
+                if COMPUTE_DK:
+                    center = tl.load(STATS + head_offset * 3)
+                    centered_delta = tl.load(STATS + head_offset * 3 + 1)
+                probability_mass = tl.load(STATS + head_offset * 3 + 2)
+                logits = tl.sum(query * key, 0) * SCALE
+                probability = tl.exp(logits - maximum) / denominator / probability_mass
+                if COMPUTE_DK:
+                    grad_probability = tl.sum(grad_output * value, 0)
+                    grad_logits = probability * ((grad_probability - center) - centered_delta) * SCALE
+                    grad_key = grad_logits * query
+                    key_hi, key_lo = _merge_pairs(key_hi, key_lo, grad_key, 0.0)
+                if COMPUTE_DV:
+                    grad_value = probability * grad_output
+                    value_hi, value_lo = _merge_pairs(value_hi, value_lo, grad_value, 0.0)
+        offset = _advance_offset(offset, 1)
     if COMPUTE_DK:
         tl.store(DK + kv_offsets, key_hi + key_lo, ds < D)
     if COMPUTE_DV:
@@ -317,7 +292,7 @@ def _finish_gradients_kernel(
 
 @functools.lru_cache(maxsize=1)
 def _kernels():
-    global tl, _merge_pairs, _reduce_pairs, _tnd_offset, _advance_offset
+    global tl, _merge_pairs, _tnd_offset, _advance_offset
     try:
         import triton
         import triton.language as language
@@ -328,7 +303,6 @@ def _kernels():
     tl = language
     _tnd_offset, _advance_offset = tnd_offset, advance_offset
     _merge_pairs = triton.jit(_merge_pairs_impl)
-    _reduce_pairs = triton.jit(_reduce_pairs_impl)
     return (
         triton, triton.jit(_forward_kernel), triton.jit(_backward_kernel),
         triton.jit(_backward_kv_kernel), triton.jit(_finish_gradients_kernel),
@@ -393,7 +367,10 @@ class _SparseAttention(torch.autograd.Function):
                 kv_kernel[(k.shape[0], k.shape[1])](
                     q, k, v, cu_seqlens, csr.cu_block_lens, csr.row_ptr, csr.query_indices,
                     normalizers, stats, grad_output, dk_ptr, dv_ptr,
-                    COMPUTE_DK=need_k, COMPUTE_DV=need_v, **kv_constants,
+                    # TwoSum depends on the rounding of each FP32 operation;
+                    # preserve those operations in the compensated KV pass.
+                    COMPUTE_DK=need_k, COMPUTE_DV=need_v, enable_fp_fusion=False,
+                    **kv_constants,
                 )
         grads = tuple(x.to(ctx.input_dtype) if x is not None else None for x in (dq, dk, dv))
         return *grads, None, None, None, None

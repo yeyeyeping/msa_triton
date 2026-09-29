@@ -12,6 +12,7 @@
   [验证方法及限制](docs/validation.md)、[必要修复记录](docs/correctness_fixes.md)、
   [NPU 首轮失败与复测步骤](docs/npu_validation_20260928.md)、
   [NPU 候选复测失败与取证](docs/npu_retest_20260929.md)、
+  [当前 attention 候选复测（48 项、短回传）](docs/npu_attention_streaming_retest.md)、
   [attention 离线编译短结果诊断](docs/npu_attention_compile_probe.md)、
   [给 NPU 执行代理的完整任务](docs/npu_glm_execution.md)、
   [vLLM-Ascend k2q 参考与适配](docs/vllm_ascend_k2q.md)。
@@ -24,10 +25,18 @@
 backward 编译崩溃和 score 非确定性非法地址访问后的级联失败。
 2026-09-29 回传的 `8649b73` 候选复测仍失败：attention 3/3 次编译崩溃，
 score blocking 10/10、non-blocking 10/10 次设备异常。B/C/D 未执行。
-下一步分析已有原始日志和 IR，见[取证任务](docs/npu_retest_20260929.md)；
 不能将候选或本机通过记录视为 NPU 缺陷已经修复。
-候选的本机回归为 **145 passed，0 failed，0 skipped**，41 个 CUDA sm80
+该旧候选的本机回归为 **145 passed，0 failed，0 skipped**，41 个 CUDA sm80
 离线编译变体通过，精度阈值仍为 `atol=rtol=1e-4`。
+
+后续六项 NPU 结构对照为 **5 failed / 1 passed**。唯一通过的 tile-sum +
+Kahan 在新增消减反例中丢失梯度残差，未采用。新 attention 候选改为逐
+CSR query 的向量 TwoSum 累加，保留概率精化、接口和精度门禁。**NPU 尚未
+复测，score 非法地址故障仍未解决**；串行 query 的性能代价亦待实测。
+下一步只执行 [48 项 attention 测试](docs/npu_attention_streaming_retest.md)，
+无需重复旧消融或回传大量 IR。
+新候选的本机 CPU interpreter 回归为 **157 passed，0 failed，0 skipped**，
+41 个 CUDA sm80 离线编译变体通过；均不包含 NPU 编译或执行。
 
 ## 使用
 
@@ -84,7 +93,7 @@ python -m msa_triton.benchmark --device npu --lengths 8192 16384 32768 --backwar
 
 Benchmark 分别记录 score、top-k、k2q CSR 构建、attention 和组合前向耗时；
 `--backward` 额外记录 score/attention 的前向加反向耗时，后者包含 CSR 构建。
-当前应先按 [复测步骤](docs/npu_validation_20260928.md) 排查失败并通过数值
+当前应先按 [attention 候选复测步骤](docs/npu_attention_streaming_retest.md) 排查失败并通过数值
 验收，再进行长序列性能测试。
 
 BF16 native eager 会在 QK 和 softmax 概率处舍入，与一次 FP64 计算最后才舍入

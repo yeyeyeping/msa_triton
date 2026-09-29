@@ -87,8 +87,8 @@ V-only 保留概率质量修正，省略不需要的导数中心计算。私有 
 ## 4. 本次没有采纳的优化
 
 - 删除中心精化：已有 D=128 反例，dQ 误差约 4.88e-4，超过原阈值。
-- 用普通 tile sum 加跨 tile Kahan 替代补偿树：有限 CPU 消融通过，但缺少
-  NPU 的数值与性能证据，生产实现保留原归约。
+- 用普通 tile sum 加跨 tile Kahan 替代补偿树：早期有限消融通过，后续新增
+  12 项反例均失败，`2^-12` 梯度残差在 tile 内被丢弃；详见第 6 节。
 - stable sort 后删除容量检查、按对象身份缓存 metadata：不能解决累计计数
   溢出或张量原地修改造成的缓存失效。
 - Cube 分块、合并 program、稀疏 Indexer、8K–32K 性能优化：留待 NPU 测量
@@ -120,3 +120,27 @@ CPU interpreter 不检查所有 Triton 语言限制的不足，不构成 NPU 验
 本机没有 GPU/NPU。CPU interpreter 不能验证 triton-ascend 编译、bitcast /
 gather 的目标布局、补偿表达式是否被后端保留、并发或性能。迁移到 NPU 后须
 重新执行完整精度门禁，再测长序列内存与耗时；不应根据本机时间推算加速比。
+
+## 6. NPU 结构对照后的 attention 累加候选
+
+`6d47514` 的六项 NPU 对照为 5 failed / 1 passed：独立树编译失败，原
+全梯度、QK、QV、拆分 DK/DV launch 均未通过；tile-sum + Kahan 只通过该
+D=128 样例。普通 tile sum 会先丢掉 tile 内消减残差，跨 tile Kahan 无法
+恢复。新增 12 项正式回归对齐 CPU FP64，覆盖 dK/dV × BF16/FP16/FP32 ×
+仅目标梯度/全部梯度；参考残差 `0.000244140625` 不能被算为零，阈值仍为
+`atol=rtol=1e-4`。旧树 12 项通过，tile-sum 消融 12 项失败。
+
+正式 KV 候选改为逐 CSR query、逐同组 head 累加单个 FP32 `[D]` 梯度向量，
+用 TwoSum 保留高低分量，最后写回。该 kernel 设置 `enable_fp_fusion=False`
+以保留补偿表达式；center/mass 精化和独立梯度开关保持。改变了浮点加法
+顺序，因此原长序列 BF16 舍入用例仍是必需的回归，而非假定结果逐位不变。
+
+4 项生产 helper 测试改为单 FP32 贡献流，对照独立 `math.fsum`；所选样例
+hi+lo 使用 `1e-12` 门禁，并检查非零 low。这不是对任意输入范围、任意
+双分量输入的无损累加保证。历史树固定在显式诊断文件中，未从历史证据中
+抹除，也不会混进新候选的正式 NPU 测试。
+
+更小的同时存活张量不保证 Ascend 编译成功，也不能证明原故障是容量不足。
+串行 query 的吞吐可能下降，本轮目标是可编译与正确性候选，性能待实测。
+score 的非法 GM 地址问题仍未解决。当前任务见
+[48 项 attention 复测](npu_attention_streaming_retest.md)。

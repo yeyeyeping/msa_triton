@@ -1,4 +1,4 @@
-"""Run six attention compiler probes in separate processes, retaining local evidence.
+"""Run seven attention compiler probes in separate processes, retaining local evidence.
 
 This diagnostic does not change the production kernel or establish NPU acceptance.
 The parent imports only the standard library and existing stdlib diagnostic helpers.
@@ -28,7 +28,8 @@ from .probe_npu_isolated import _classify, _load_report, _write_json
 
 
 CASES = (
-    "tree-d128", "qkv-d128", "qk-d128", "qv-d128", "split-kv-d128",
+    "legacy-tree-d128", "legacy-qkv-d128", "current-qkv-d128",
+    "current-qk-d128", "current-qv-d128", "current-split-kv-d128",
     "tile-sum-kahan-d128",
 )
 SOURCE_FILES = (
@@ -36,7 +37,7 @@ SOURCE_FILES = (
     "tests/probe_attention_scope.py", "tests/probe_npu_isolated.py",
     "tests/probe_attention_compile_replay.py", "tests/probe_attention_ablation.py",
     "tests/test_attention_reduction.py", "tests/test_triton_attention.py",
-    "tests/reference_fp64.py",
+    "tests/reference_fp64.py", "tests/_attention_tree_reference.py",
 )
 
 

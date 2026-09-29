@@ -209,6 +209,51 @@ def test_long_key_accumulation_bf16_rounding_regression(device):
         torch.testing.assert_close(tensor.grad.cpu(), reference.grad.bfloat16(), atol=1e-4, rtol=1e-4)
 
 
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+@pytest.mark.parametrize("all_gradients", [False, True], ids=["kv-only", "all-gradients"])
+@pytest.mark.parametrize("gradient", ["dk", "dv"])
+def test_kv_within_tile_cancellation_against_fp64(dtype, all_gradients, gradient, device):
+    """A tile sum can lose a residual that compensation across tiles cannot recover."""
+    total = 4 if gradient == "dk" else 3
+    host_inputs = tuple(torch.zeros(total, 1, 128, dtype=dtype) for _ in range(3))
+    q, _, v = host_inputs
+    grad = torch.zeros_like(q)
+    if gradient == "dk":
+        # QK=0 gives uniform causal probabilities. At key 0 the dK terms are
+        # [0, 6144, 2**-12, -6144], all within the same CSR query tile.
+        q[:, 0, 0] = torch.tensor([0, 24576, 9 * 2**-13, -32768], dtype=dtype)
+        v[0, 0, 0] = 1
+        grad[:, 0, 0] = 1
+        gradient_index = 1
+    else:
+        # At key 0 the dV terms are [4096, 2**-12, -4096]. Every source
+        # value is exactly representable in FP16, BF16 and FP32.
+        grad[:, 0, 0] = torch.tensor([4096, 2**-11, -12288], dtype=dtype)
+        gradient_index = 2
+    needs_grad = tuple(all_gradients or index == gradient_index for index in range(3))
+    tensors = tuple(x.to(device).detach().requires_grad_(need) for x, need in zip(host_inputs, needs_grad))
+    reference_inputs = tuple(x.double().requires_grad_(need) for x, need in zip(host_inputs, needs_grad))
+    host_indices = torch.zeros(total, 1, 1, dtype=torch.int32)
+    host_cu = torch.tensor([0, total], dtype=torch.int32)
+    expected, _ = sparse_attention_fp64(
+        *reference_inputs, host_indices, host_cu, total, block_size=4, scale=1,
+    )
+    actual = m3_sparse_attention(
+        *tensors, host_indices.to(device), host_cu.to(device), total, block_size=4, scale=1,
+    )
+    torch.testing.assert_close(actual.detach().cpu(), expected.detach().to(dtype), atol=1e-4, rtol=1e-4)
+    expected.backward(grad.double())
+    actual.backward(grad.to(device))
+    residual = reference_inputs[gradient_index].grad[0, 0, 0]
+    torch.testing.assert_close(residual, torch.tensor(2**-12, dtype=torch.float64), atol=1e-10, rtol=0)
+    torch.testing.assert_close(residual.to(dtype), torch.tensor(2**-12, dtype=dtype), atol=0, rtol=0)
+    for tensor, reference, need in zip(tensors, reference_inputs, needs_grad):
+        if need:
+            torch.testing.assert_close(tensor.grad.cpu(), reference.grad.to(dtype), atol=1e-4, rtol=1e-4)
+        else:
+            assert tensor.grad is None
+
+
 def test_kv_owner_matches_query_owner_and_fp64_with_hotspots(device):
     lengths, groups, ratio, dim, block_size = [41, 5], 2, 4, 16, 8
     tensors, indices, cu = _inputs(lengths, groups, ratio, dim, block_size, 2, device)

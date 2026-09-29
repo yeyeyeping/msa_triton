@@ -5,30 +5,29 @@ Each case must run in a fresh process on NPU. Run with the isolated probe:
     python -m msa_triton.tests.probe_npu_isolated \
         msa_triton/tests/probe_attention_cases.py --output-dir /tmp/msa-attention-cases
 
-CPU validation requires MSA_TEST_DEVICE=cpu and TRITON_INTERPRET=1. The two
-experiments modify only this process: separate launches retain the original
-KV kernel, while tile-sum-kahan loads an ablated copy from a temporary file.
-Neither experiment changes the production implementation or acceptance gate.
+CPU validation requires MSA_TEST_DEVICE=cpu and TRITON_INTERPRET=1. Historical
+cases use the frozen 6d47514 tree or its tile-sum-Kahan ablation. Current cases
+exercise production KV backward, including separate dK/dV launches. Historical
+failures are diagnostic evidence, not production acceptance failures.
 """
 
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import os
-from pathlib import Path
 
 import pytest
 import torch
 
 from msa_triton.tests.probe_attention_ablation import ablate
+from msa_triton.tests._attention_tree_reference import check_legacy_tree, load_legacy_kv
 from msa_triton.tests.reference_fp64 import sparse_attention_fp64
 from msa_triton.tests.test_triton_attention import _assert_lse, _inputs
 
 
 CASES = (
-    "tree-d128", "qkv-d128", "qk-d128", "qv-d128", "split-kv-d128",
-    "tile-sum-kahan-d128",
+    "legacy-tree-d128", "legacy-qkv-d128", "current-qkv-d128",
+    "current-qk-d128", "current-qv-d128", "current-split-kv-d128", "tile-sum-kahan-d128",
 )
 
 
@@ -105,40 +104,20 @@ class _TracingKernel:
         return launch
 
 
-def _temporary_ablation(module, tmp_path, monkeypatch):
-    source = ablate(Path(module.__file__).read_text(), "tile-sum-kahan")
-    path = tmp_path / "attention_tile_sum_kahan.py"
-    path.write_text(source)
-    name = "msa_triton.triton._probe_attention_tile_sum_kahan"
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Could not load the temporary attention ablation")
-    copy = importlib.util.module_from_spec(spec)
-    # Keep a package-qualified module name so the copy's relative imports and
-    # Triton source inspection work. monkeypatch removes it after this case.
-    import sys
-
-    monkeypatch.setitem(sys.modules, name, copy)
-    spec.loader.exec_module(copy)
-    return copy
-
-
 @pytest.mark.parametrize("case", CASES)
 def test_probe(case, device, monkeypatch, tmp_path):
     _stage(f"case_{case}")
     module = importlib.import_module("msa_triton.triton.sparse_attention")
-    if case == "tree-d128":
-        tree = importlib.import_module("msa_triton.tests.test_attention_reduction")
-        monkeypatch.setattr(tree, "DEVICE", str(device))
+    if case == "legacy-tree-d128":
         _stage("tree_launch_and_exact_hi_lo_check")
-        tree.test_adjacent_pair_tree_preserves_low_components(128)
+        check_legacy_tree(device, dimension=128)
         _synchronize(device)
         _stage("complete")
         return
 
     needs_grad = {
-        "qk-d128": (True, True, False),
-        "qv-d128": (True, False, True),
+        "current-qk-d128": (True, True, False),
+        "current-qv-d128": (True, False, True),
     }.get(case, (True, True, True))
     # Q remains enabled for both partial-gradient probes, retaining the same
     # query center/mass prepass as the original failing Q/K/V case.
@@ -157,12 +136,14 @@ def test_probe(case, device, monkeypatch, tmp_path):
         *reference_inputs, indices.cpu(), cu.cpu(), 5, block_size=4, scale=None,
     )
 
-    if case == "tile-sum-kahan-d128":
-        module = _temporary_ablation(module, tmp_path, monkeypatch)
     kernels = module._kernels()
     split_kernel = None
     kv_kernel = kernels[3]
-    if case == "split-kv-d128":
+    if case == "legacy-qkv-d128":
+        kv_kernel = load_legacy_kv(tmp_path)
+    elif case == "tile-sum-kahan-d128":
+        kv_kernel = load_legacy_kv(tmp_path, transform=lambda source: ablate(source, "tile-sum-kahan"))
+    elif case == "current-split-kv-d128":
         split_kernel = _SplitKVKernel(kernels[3], device)
         # The original query backward sees all three requested gradients. Both
         # KV launches receive its unchanged stats and the same allocated DK/DV.
