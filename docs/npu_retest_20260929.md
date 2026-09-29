@@ -12,7 +12,9 @@
 
 后续离线对照回传：原参数和仅关闭 auto multi-buffer 均为 returncode=-6，
 同一 `PlanMemory Traverse IR Failed`。该选项不能单独绕过错误，下一步
-采集崩溃前 pass 的局部 IR，生产内核尚未产生新的修复候选。
+采集崩溃前 pass 的局部 IR。后续收到的 UB alloc/vadd/store 尾部片段仍无
+op 级定位，当前启用已准备的六项结构对照，详见上方任务文档。
+生产内核尚未产生新的修复候选。
 
 本次测试针对 `fix/npu-portability` 的
 `8649b7377a00e2a512cd1b333b2385c7e274a2ed`，内核改动提交为 `ebf85cd`。

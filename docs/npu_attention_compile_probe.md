@@ -2,9 +2,27 @@
 
 > 最新回传：baseline 与 `multi_buffer_off` 均以 -6 退出，包含相同
 > `PlanMemory Traverse IR Failed`。单独关闭 multi-buffer 无效。
-> 下一步优先执行下方的 **pass IR 采集**，不用再重复原 A/B。
+> 随后回传的 5 行 IR 展示 UB 分配、vadd/store 和 subloop 结束，仍没有
+> op 级错误位置。**当前执行下方六个结构对照**，只回传控制台摘要；不再
+> 重复 A/B 或 pass dump。
 
-## 当前任务：一次离线编译，提取最后一个 pass 的 IR
+## 对最新 IR 片段的判断
+
+`memref<128xf32, #hivm.address_space<ub>>` 的单个数据缓冲为 512 字节，
+该大小本身不能说明整个内核的 UB 峰值。`vadd` 后 `store` 与生产 KV 内核
+最后的 `high + low` 写回形式一致；缺少 `%34` 定义和目标 GM 指针来源，
+目前不能确认它具体对应 dK 还是 dV，也不能认定这就是失败 op。
+
+`annotation.mark {hivm.multi_buffer = 2}` 不表示关闭开关的对照失效：
+`--dump-pass-ir` 按协议使用 multi-buffer=True 的 baseline。
+`autoblockify.subloop` 只是片段中看到的循环属性，不足以认定 auto-blockify
+是根因。当前上游 [PlanMemory.cpp](https://github.com/Ascend/AscendNPU-IR/blob/master/bishengir/lib/Dialect/HIVM/Transforms/PlanMemory.cpp)
+明确处理本地 alloc 与 annotation mark，实际安装版本仍须区别对待。
+仅截取日志末尾不能替代失败位置诊断。
+
+## 已有取证步骤：一次离线编译，提取最后一个 pass 的 IR
+
+本节保留命令背景，当前不用再次执行。直接跳到下一节六个结构对照。
 
 沿用刚才已成功运行的 `--exception-chain`、`--ir`、`--ir-sha256`、`--cwd`
 参数，更新分支脚本后，**只增加 `--dump-pass-ir`**。若之前手动指定了
@@ -41,9 +59,9 @@
 4. 不支持参数、没有 dump 或遇到不同错误时，回传短状态和错误首行即可。
    暂不自动升级环境、添加其他开关或继续全量测试。
 
-## 已准备的后备：六个结构对照（当前不用执行）
+## 当前任务：六个结构对照
 
-若 pass IR 仍无法定位，再运行以下工具。每个用例在独立进程中执行，原始
+现有 IR 片段仍无法定位，运行以下已有工具。每个用例在独立进程中执行，原始
 输入与精度门禁保留，源码中的实验修改仅在对应进程生效。
 
 | 用例 | 验证内容 |
@@ -55,6 +73,8 @@
 | tile-sum-kahan-d128 | 保留 center/mass，仅在临时源码里改用 tile sum + Kahan |
 
 ```bash
+source /mnt/share/y00977881/cann/Ascend/cann/set_env.sh
+cd /mnt/share/y00977881/project
 ASCEND_RT_VISIBLE_DEVICES=15 \
   /mnt/share/y00977881/env/veomni_m3/bin/python \
   -m msa_triton.tests.probe_attention_scope
@@ -64,6 +84,9 @@ ASCEND_RT_VISIBLE_DEVICES=15 \
 IR/cache、临时消融源码和 JSON 保存在新的 `/tmp/msa-att-scope-*` 中。
 出现设备运行异常时停止后续用例；编译失败可以继续下一个独立进程。
 常规 pytest 收集数量仍为 145，这六项需显式选中，不作为新增 NPU 验收结果。
+沿用此前能访问卡 15 的权限环境。回传六条 `用例: 状态 reason=... STAGE=...`
+及最后的 `Status:`；若提前停止，保留 `not_run`，不补猜未执行结果。
+已有 pass 标题可以额外附一行，但不用因此重新跑编译或回传大量 IR。
 
 split 对照通过只能支持进一步验证拆分 launch；不能证明是 UB 容量不足。
 孤立 tree 通过也不能排除它与循环/周边 IR 组合的问题。Kahan 会改变归约
