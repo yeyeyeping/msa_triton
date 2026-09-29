@@ -3,8 +3,12 @@
 ## 当前状态
 
 **候选未解决两类 NPU 故障，NPU 验收仍然失败。** 本文根据用户于
-2026-09-29 回传的报告整理；本机尚未取得报告列出的原始日志、IR 和缓存。
+2026-09-29 回传的报告整理；随后已收到两条原始异常链，IR 和缓存仍未取得。
 以下结果来自用户实机执行，不是本机复现。
+
+用户无法传输大量文本；当前优先执行
+[只回传短结果的 attention 离线编译对照](npu_attention_compile_probe.md)。
+下方完整取证清单保留为参考，不要求此时全部回传。
 
 本次测试针对 `fix/npu-portability` 的
 `8649b7377a00e2a512cd1b333b2385c7e274a2ed`，内核改动提交为 `ebf85cd`。
@@ -55,7 +59,9 @@ LLVM ERROR: PlanMemory Traverse IR Failed!
 公开的 [AscendNPU-IR PlanMemory.cpp](https://github.com/Ascend/AscendNPU-IR/blob/master/bishengir/lib/Dialect/HIVM/Transforms/PlanMemory.cpp)
 在 IR 遍历被中断时发出上述消息，相关路径包括本地分配检查失败、无法处理的
 操作访问本地 buffer。因此这条消息本身**不能证明 UB 容量不足**；优先需要
-完整 stderr 中它之前的诊断和失败 pass 的 IR。该公开源码并非已确认与报告
+完整 stderr 中它之前的诊断和失败 pass 的 IR。后续收到的异常链确认
+stderr 没有前置诊断，也未包含失败 op，下一步改用同 IR 离线编译对照。
+该公开源码并非已确认与报告
 中的编译器二进制一致，只作为查找线索。
 
 ### Score：地址候选改动未解决设备异常

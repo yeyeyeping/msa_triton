@@ -12,6 +12,7 @@
   [验证方法及限制](docs/validation.md)、[必要修复记录](docs/correctness_fixes.md)、
   [NPU 首轮失败与复测步骤](docs/npu_validation_20260928.md)、
   [NPU 候选复测失败与取证](docs/npu_retest_20260929.md)、
+  [attention 离线编译短结果诊断](docs/npu_attention_compile_probe.md)、
   [给 NPU 执行代理的完整任务](docs/npu_glm_execution.md)、
   [vLLM-Ascend k2q 参考与适配](docs/vllm_ascend_k2q.md)。
 
