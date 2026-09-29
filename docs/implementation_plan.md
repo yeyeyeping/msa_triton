@@ -60,7 +60,8 @@ V-only 保留概率质量精化。Triton 地址在乘加前提升为 int64，int
 NPU 首轮验收失败后的候选：score 直接归约序列起止边界，消除间接 CU
 读取，并在指针构造前钳制 masked lane；attention 的相邻行补偿树用静态
 reshape/permute/split 实现，数学次序不变。实机状态及复测命令见
-`npu_validation_20260928.md`；尚不能将这些候选视为 NPU 修复已验证。
+`npu_validation_20260928.md`。2026-09-29 回传确认两项候选均未解决设备
+故障，后续先分析原始异常链与 IR，见 `npu_retest_20260929.md`。
 首版采用可移植、易验证的 kernel，不承诺在 A3 上已经获得速度提升。
 
 参考 vLLM-Ascend 的反向邻接思想，具体来源和差异见 `vllm_ascend_k2q.md`。

@@ -11,6 +11,7 @@
 * [实施计划](docs/implementation_plan.md)、[训练与 KL 流程](docs/msa_training_flow.md)、
   [验证方法及限制](docs/validation.md)、[必要修复记录](docs/correctness_fixes.md)、
   [NPU 首轮失败与复测步骤](docs/npu_validation_20260928.md)、
+  [NPU 候选复测失败与取证](docs/npu_retest_20260929.md)、
   [给 NPU 执行代理的完整任务](docs/npu_glm_execution.md)、
   [vLLM-Ascend k2q 参考与适配](docs/vllm_ascend_k2q.md)。
 
@@ -20,7 +21,9 @@
 
 用户提供的首轮 NPU 结果为 **90 passed / 48 failed**，包含 attention KV
 backward 编译崩溃和 score 非确定性非法地址访问后的级联失败。
-`fix/npu-portability` 提供兼容性改动及隔离复现工具，等待实机复测；
+2026-09-29 回传的 `8649b73` 候选复测仍失败：attention 3/3 次编译崩溃，
+score blocking 10/10、non-blocking 10/10 次设备异常。B/C/D 未执行。
+下一步分析已有原始日志和 IR，见[取证任务](docs/npu_retest_20260929.md)；
 不能将候选或本机通过记录视为 NPU 缺陷已经修复。
 候选的本机回归为 **145 passed，0 failed，0 skipped**，41 个 CUDA sm80
 离线编译变体通过，精度阈值仍为 `atol=rtol=1e-4`。
